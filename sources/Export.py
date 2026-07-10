@@ -48,6 +48,12 @@ from export.xplane_weather import (
     save_weather_profile,
 )
 
+## Imports for step two
+from runs import has_images
+from export.lard_bridge import generate_gt
+from export.xplane_bridge import render_xplane_run
+from export.sensor_faults import apply_faults
+
  
 def _read_param(node, name):
     """Lit un parametre TAF depuis un node (instance 0)."""
@@ -261,8 +267,7 @@ def step_render(run_dir, xplane_dir):
 
     :return: True si images presentes apres rendu, False sinon
     """
-    from runs import has_images
-    from export.xplane_bridge import render_xplane_run
+    
 
     run_dir = Path(run_dir)
 
@@ -283,8 +288,6 @@ def step_faults(run_dir):
     Les exceptions sont logees mais ne bloquent pas le pipeline : la presence
     de fautes est optionnelle.
     """
-    from export.sensor_faults import apply_faults
-
     try:
         apply_faults(run_dir)
     except Exception as e:
@@ -300,8 +303,6 @@ def step_ground_truth(run_dir):
 
     :return: True si CSV present apres l'etape (genere ou existant), False sinon
     """
-    from export.lard_bridge import generate_gt
-
     run_dir = Path(run_dir)
     if list(run_dir.glob("*_labels.csv")):
         print(f"  [Image] GT deja present, skip")
