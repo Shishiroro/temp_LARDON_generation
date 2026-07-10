@@ -16,7 +16,9 @@ from typing import Optional, Callable
 
 import cv2
 import numpy as np
-
+import inspect
+import logging
+import albumentations as A
 
 # ---------------------------------------------------------------------------
 # Fonctions de degradation individuelles
@@ -109,9 +111,8 @@ def glass_blur(img: np.ndarray, severity: float = 0.5) -> np.ndarray:
       max_delta   : 2   -> 6     (defaut alb : 4, deplacement max en pixels)
       iterations  : 1   -> 3     (defaut alb : 2)
     """
-    import logging
     logging.getLogger("albumentations").setLevel(logging.WARNING)
-    import albumentations as A
+
     sigma = 0.4 + severity * 0.6
     max_delta = int(2 + severity * 4)
     iterations = int(1 + severity * 2)
@@ -308,9 +309,8 @@ def droplets(img: np.ndarray, severity: float = 0.5) -> np.ndarray:
     Seul gauss_sigma depend de severity (0 -> 2.0, 1 -> 5.0, plage du site
     albumentations). Tous les autres parametres restent aux defauts du site.
     """
-    import logging
     logging.getLogger("albumentations").setLevel(logging.WARNING)
-    import albumentations as A
+
     gauss_sigma = 2.0 + severity * 3.0  # 2.0 -> 5.0
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     transform = A.Spatter(
@@ -337,9 +337,8 @@ def snow(img: np.ndarray, severity: float = 0.5) -> np.ndarray:
       snow_point        : 0.30 -> 0.05  (plage [0.05, 0.30])
       brightness_coeff  : 2.0  -> 3.0   (plage [2, 3])
     """
-    import logging
     logging.getLogger("albumentations").setLevel(logging.WARNING)
-    import albumentations as A
+
     snow_point = 0.30 - severity * 0.25
     brightness_coeff = 2.0 + severity * 1.0
     # albumentations attend RGB ; notre pipeline est BGR (cv2)
@@ -494,7 +493,6 @@ def apply_errors(
     Returns:
         Image degradee BGR uint8.
     """
-    import inspect
     result = img.copy()
     for name in errors:
         if name not in ERROR_REGISTRY:
