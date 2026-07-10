@@ -15,6 +15,13 @@ import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional
+import cv2
+import sys
+
+from runs import list_images
+
+# Make the path relative, so we dont need _paths.py
+from .camera_sensor_errors.camera_sensor_errors import apply_errors
 
 
 # 26 types de fautes capteur hardware
@@ -114,9 +121,6 @@ def load_fault_profile(profile_path):
 
 def apply_faults_to_directory(input_dir, output_dir, faults, n_frames):
     """Applique les fautes capteur aux images d'un dossier."""
-    import cv2
-    import sys
-
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -125,8 +129,6 @@ def apply_faults_to_directory(input_dir, output_dir, faults, n_frames):
     cse_dir = str(Path(__file__).resolve().parent / "camera_sensor_errors")
     if cse_dir not in sys.path:
         sys.path.insert(0, cse_dir)
-
-    from camera_sensor_errors import apply_errors
 
     extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
     images = sorted(f for f in input_dir.iterdir() if f.suffix.lower() in extensions)
@@ -166,8 +168,6 @@ def apply_faults(run_dir):
     :return: dossier d'images a utiliser pour YOLO (degraded/ si fautes appliquees,
              footage/ sinon)
     """
-    from runs import list_images
-
     run_dir = Path(run_dir)
     fault_json = run_dir / "fault_profile.json"
     footage_dir = run_dir / "footage"
