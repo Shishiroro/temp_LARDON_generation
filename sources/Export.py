@@ -28,14 +28,24 @@ if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 import _paths  # noqa: F401
 
-from trajectory_builder import TrajectoryConfig, OUParams, build_trajectory
-from lard_bridge import get_runway_geometry, export_scenario
-from xplane_bridge import save_poses_json
-from sensor_faults import (
-    FaultConfig, KNOWN_FAULT_TYPES, validate_faults, save_fault_profile,
+from export.trajectory_builder import (
+    TrajectoryConfig, 
+    OUParams, 
+    build_trajectory
 )
-from xplane_weather import (
-    WeatherConfig, validate_weather, has_weather, save_weather_profile,
+from export.lard_bridge import get_runway_geometry, export_scenario
+from export.xplane_bridge import save_poses_json
+from export.sensor_faults import (
+    FaultConfig, 
+    KNOWN_FAULT_TYPES, 
+    validate_faults, 
+    save_fault_profile,
+)
+from export.xplane_weather import (
+    WeatherConfig, 
+    validate_weather, 
+    has_weather, 
+    save_weather_profile,
 )
 
  
@@ -252,7 +262,7 @@ def step_render(run_dir, xplane_dir):
     :return: True si images presentes apres rendu, False sinon
     """
     from runs import has_images
-    from xplane_bridge import render_xplane_run
+    from export.xplane_bridge import render_xplane_run
 
     run_dir = Path(run_dir)
 
@@ -273,7 +283,7 @@ def step_faults(run_dir):
     Les exceptions sont logees mais ne bloquent pas le pipeline : la presence
     de fautes est optionnelle.
     """
-    from sensor_faults import apply_faults
+    from export.sensor_faults import apply_faults
 
     try:
         apply_faults(run_dir)
@@ -290,7 +300,7 @@ def step_ground_truth(run_dir):
 
     :return: True si CSV present apres l'etape (genere ou existant), False sinon
     """
-    from lard_bridge import generate_gt
+    from export.lard_bridge import generate_gt
 
     run_dir = Path(run_dir)
     if list(run_dir.glob("*_labels.csv")):
