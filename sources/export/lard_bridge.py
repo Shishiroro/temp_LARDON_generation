@@ -32,6 +32,7 @@ PROJECT_ROOT = _paths.ROOT
 # DB LARD X-Plane (meme DB que le labeling LARD pour coherence trajectoire/GT)
 RUNWAY_DB_XPLANE = str(LARD_ROOT / "data" / "runways_db_V2_XPlane.json")
 
+# TODO: modify the way to import LARD.. make it a package you can import instead of using LARD as it is your project
 from src.geo.geo_dataset import compute_aiming_point
 from src.geo.geo_utils import ecef2llh
 from src.labeling.label_export import export_labels
