@@ -24,7 +24,7 @@ en interactif.
 
 ## Aperçu de l'outil
 
-![Aperçu du pipeline](docs/pipeline.png)
+![Aperçu du pipeline](docs/LARDON-architecture.png)
 
 ---
 
@@ -120,7 +120,7 @@ Deux éléments distincts à installer :
 1. **XPPython3** — le moteur de plugins Python pour X-Plane.
    Suivre la procédure officielle :
 
-   > https://xppython3.readthedocs.io/en/latest/usage/installation_plugin.html
+   > <https://xppython3.readthedocs.io/en/latest/usage/installation_plugin.html>
 
    Il s'installe dans : `X-Plane 12/Resources/plugins/`.
 
