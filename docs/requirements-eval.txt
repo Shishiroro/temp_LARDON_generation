@@ -1,0 +1,10 @@
+# Evaluation (Phase 3) : detection YOLO + calcul IoU.
+# Inclut le batch base + les deps lourdes (PyTorch ~2-3 Go).
+#   pip install -r requirements-eval.txt     (ou : uv pip install -r requirements-eval.txt)
+
+-r requirements.txt
+
+# YOLOv8 + evaluation IoU
+ultralytics
+torch
+pandas

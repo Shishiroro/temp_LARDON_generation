@@ -1,0 +1,364 @@
+<?xml version="1.0"?>
+<!-- ============================================================
+     FICHIER GENERE par scripts/build_weather_templates.py
+     Profil : snow/snow_moderate   |   NE PAS EDITER A LA MAIN
+     Source : base.xml + table PRESETS du generateur.
+     Regenerer : py scripts/build_weather_templates.py
+     ============================================================ -->
+<!--
+    base.xml — Template de base : trajectoire + meteo + 26 fautes.
+
+    Les variantes meteo (brouillard, nuages, pluie, neige, ciel clair) sont
+    des XML autonomes generes dans templates/<profil>/ par :
+        py scripts/build_weather_templates.py
+    Choisir le XML actif dans sources/settings.xml (parametre template_file_name,
+    ex: value="rain/rain_heavy.xml").
+
+    Conventions :
+      - min/max identiques = valeur fixe
+      - min/max differents = TAF sample dans la plage (z3)
+      - severity > 0 active une faute, severity = 0 la desactive
+
+    Modele de duree des fautes (T5) :
+      - start_pct    : debut application en % de la trajectoire [0, 100]
+      - duration_pct : duree de la faute en % de la trajectoire
+      - Contrainte z3 : start_pct + duration_pct <= 100 (sinon UNSAT)
+
+    airport_runway : format "ICAO_RWY" (ex: "LFPO_24").
+    Liste = LARD/data/runways_db_V2_XPlane.json (259 aeroports, 980 pistes).
+-->
+<root name="test_case">
+
+    <node name="scenario" nb_instances="1">
+
+        <!-- ===========================================================
+             TRAJECTOIRE : timing, distances, vent, OU, piste
+             ===========================================================
+        -->
+        <node name="trajectory">
+
+            <parameter name="fps"                          type="integer" min="12"   max="12"/>  <!-- Images par seconde de la trajectoire echantillonnee -->
+
+            <parameter name="along_track_distance_start"   type="real"    min="2800" max="2800"/>  <!-- Distance a la piste ou debute l'approche (m) -->
+            <parameter name="along_track_distance_end"     type="real"    min="280"  max="280"/>   <!-- Distance a la piste ou se termine l'approche (m) -->
+            <parameter name="ground_speed_kts"             type="real"    min="145"  max="145"/>   <!-- Vitesse sol constante de l'avion (kts) -->
+
+            <!-- Processus Ornstein-Uhlenbeck (turbulence) -->
+            <parameter name="turbulence_intensity"         type="real"    min="0"    max="1"/>  <!-- Intensite turbulence OU : 0=trajectoire lisse, 1=tres agitee -->
+
+            <!-- Vent -->
+            <parameter name="wind_speed_kts"               type="real"    min="0"    max="30"/>   <!-- Vitesse du vent (kts) : genere l'angle de crabe -->
+            <parameter name="wind_direction_deg"           type="real"    min="0"    max="359"/>  <!-- Direction d'ou vient le vent (deg) -->
+
+            <parameter name="stabilization_distance_m"     type="real"    min="1000" max="1500"/>  <!-- Distance a la piste ou la trajectoire converge / se stabilise (m) -->
+
+            <!-- Version piste unique (decommenter pour forcer une seule piste) :
+            <parameter name="airport_runway"               type="string"  values="LFPO_24"/> -->
+
+            <!-- Aeroport + piste cibles (format ICAO_RWY, ex LFPO_24) -->
+            <parameter name="airport_runway"               type="string"  values="CYEG_2;CYEG_20;CYVR_08L;CYVR_08R;CYVR_13;CYVR_26L;CYVR_26R;CYVR_31;CYYC_11;CYYC_17L;CYYC_17R;CYYC_26;CYYC_29;CYYC_35L;CYYC_35R;CYYC_8;CYYZ_06L;CYYZ_06R;CYYZ_15L;CYYZ_15R;CYYZ_24L;CYYZ_24R;CYYZ_33L;CYYZ_33R;DAAG_23;DAAG_27;DAAG_5;DAAG_9;DTTA_1;DTTA_11;DTTA_19;DTTA_29;EBBR_01;EBBR_07L;EBBR_07R;EBBR_19;EBBR_25L;EBBR_25R;EBCI_24;EBCI_6;EDDF_07C;EDDF_07L;EDDF_07R;EDDF_25C;EDDF_25L;EDDF_25R;EDDH_15;EDDH_23;EDDH_33;EDDH_5;EDDK_14L;EDDK_14R;EDDK_24;EDDK_32L;EDDK_32R;EDDK_6;EDDL_05L;EDDL_05R;EDDL_23L;EDDL_23R;EDDM_26L;EDDM_26R;EDDM_8L;EDDM_8R;EDDS_07;EDDS_25;EDDV_27L;EDDV_27R;EDDV_9L;EDDV_9R;EFHK_15;EFHK_22L;EFHK_22R;EFHK_33;EFHK_4L;EFHK_4R;EGAA_25;EGAA_7;EGBB_15;EGBB_33;EGCC_05L;EGCC_05R;EGCC_23L;EGCC_23R;EGGD_27;EGGD_9;EGGW_25;EGGW_7;EGKK_08L;EGKK_08R;EGKK_26L;EGKK_26R;EGLL_27L;EGLL_27R;EGLL_9L;EGLL_9R;EGPF_23;EGPF_5;EGPH_06;EGPH_24;EGSS_04;EGSS_22;EHAM_00C;EHAM_00L;EHAM_04;EHAM_06;EHAM_18C;EHAM_18R;EHAM_22;EHAM_24;EHAM_27;EHAM_9;EHEH_03;EHEH_21;EIDW_10R;EIDW_28L;EKCH_12;EKCH_22L;EKCH_22R;EKCH_30;EKCH_4L;EKCH_4R;ENBR_17;ENBR_35;ENGM_19L;ENGM_19R;ENGM_1L;ENGM_1R;EPKK_07;EPKK_25;EPWA_11;EPWA_15;EPWA_29;EPWA_33;ESSA_01L;ESSA_01R;ESSA_08;ESSA_19L;ESSA_19R;ESSA_26;FACT_01;FACT_16;FACT_19;FACT_34;FALE_24;FALE_6;FAOR_03L;FAOR_03R;FAOR_21L;FAOR_21R;GCLP_03L;GCLP_03R;GCLP_21L;GCLP_21R;GCTS_07;GCTS_25;GMMN_17L;GMMN_17R;GMMN_35L;GMMN_35R;GMMX_10;GMMX_28;HECA_05C;HECA_05L;HECA_05R;HECA_23C;HECA_23L;HECA_23R;KATL_10;KATL_26L;KATL_26R;KATL_27L;KATL_27R;KATL_28;KATL_8L;KATL_8R;KATL_9L;KATL_9R;KAUS_00L;KAUS_00R;KAUS_18L;KAUS_18R;KBDL_15;KBDL_24;KBDL_33;KBDL_6;KBNA_13;KBNA_20C;KBNA_20L;KBNA_20R;KBNA_2C;KBNA_2L;KBNA_2R;KBNA_31;KBOS_15R;KBOS_22L;KBOS_22R;KBOS_27;KBOS_33L;KBOS_4L;KBOS_4R;KBOS_9;KBUR_15;KBUR_26;KBUR_33;KBUR_8;KBWI_15L;KBWI_33R;KCLE_10;KCLE_24L;KCLE_24R;KCLE_28;KCLE_6L;KCLE_6R;KCLT_00C;KCLT_00L;KCLT_00R;KCLT_05;KCLT_18C;KCLT_18L;KCLT_18R;KCLT_23;KCMH_10L;KCMH_10R;KCMH_28L;KCMH_28R;KCVG_00C;KCVG_00L;KCVG_00R;KCVG_18C;KCVG_18L;KCVG_18R;KCVG_27;KCVG_9;KDCA_01;KDCA_15;KDCA_19;KDCA_22;KDCA_33;KDCA_4;KDEN_16L;KDEN_16R;KDEN_17R;KDEN_25;KDEN_26;KDEN_34L;KDEN_34R;KDEN_35L;KDEN_7;KDEN_8;KEWR_11;KEWR_22L;KEWR_22R;KEWR_29;KEWR_4L;KEWR_4R;KFLL_10L;KFLL_10R;KFLL_28L;KFLL_28R;KHOU_13R;KHOU_22;KHOU_31L;KHOU_4;KIAD_12;KIAD_19C;KIAD_19L;KIAD_19R;KIAD_1C;KIAD_1L;KIAD_1R;KIAD_30;KIAH_08L;KIAH_15L;KIAH_15R;KIAH_26L;KIAH_26R;KIAH_27;KIAH_33L;KIAH_33R;KIAH_8R;KIAH_9;KIND_14;KIND_23L;KIND_23R;KIND_32;KIND_5L;KIND_5R;KJAX_14;KJAX_26;KJAX_32;KJAX_8;KJFK_13L;KJFK_13R;KJFK_22L;KJFK_31L;KJFK_31R;KJFK_4R;KLAS_01L;KLAS_01R;KLAS_19L;KLAS_19R;KLAS_26L;KLAS_26R;KLAS_8L;KLAS_8R;KLAX_24L;KLAX_24R;KLAX_25L;KLAX_25R;KLAX_6L;KLAX_6R;KLAX_7L;KLAX_7R;KLGA_13;KLGA_22;KLGA_31;KLGA_4;KMCI_19L;KMCI_19R;KMCI_1L;KMCI_1R;KMCI_27;KMCI_9;KMCO_00L;KMCO_00R;KMCO_17L;KMCO_17R;KMCO_18L;KMCO_18R;KMCO_35L;KMCO_35R;KMDW_04L;KMDW_04R;KMDW_13C;KMDW_13L;KMDW_22L;KMDW_22R;KMDW_31C;KMDW_31R;KMIA_08L;KMIA_08R;KMIA_12;KMIA_26L;KMIA_26R;KMIA_30;KMKE_13;KMKE_19R;KMKE_1L;KMKE_25L;KMKE_25R;KMKE_31;KMKE_7L;KMKE_7R;KMSP_12L;KMSP_12R;KMSP_17;KMSP_22;KMSP_30L;KMSP_30R;KMSP_35;KMSP_4;KMSY_11;KMSY_2;KMSY_20;KMSY_29;KOAK_10L;KOAK_10R;KOAK_28L;KOAK_28R;KONT_26L;KONT_26R;KONT_8L;KONT_8R;KORD_09C;KORD_10C;KORD_10L;KORD_10R;KORD_22L;KORD_22R;KORD_27C;KORD_27R;KORD_28C;KORD_28L;KORD_28R;KORD_4L;KORD_4R;KORD_9L;KPBI_10L;KPBI_14;KPBI_28R;KPBI_32;KPDX_10L;KPDX_10R;KPDX_21;KPDX_28L;KPDX_28R;KPDX_3;KPHL_09L;KPHL_17;KPHL_27R;KPHL_35;KPHX_07L;KPHX_07R;KPHX_08;KPHX_25L;KPHX_25R;KPHX_26;KPIT_10C;KPIT_10L;KPIT_10R;KPIT_14;KPIT_28C;KPIT_28L;KPIT_28R;KPIT_32;KRDU_14;KRDU_23L;KRDU_23R;KRDU_32;KRDU_5L;KRDU_5R;KRSW_24;KRSW_6;KSAT_13R;KSAT_22;KSAT_31L;KSAT_4;KSEA_16C;KSEA_16L;KSEA_16R;KSEA_34C;KSEA_34L;KSEA_34R;KSFO_10L;KSFO_10R;KSFO_19L;KSFO_19R;KSFO_1L;KSFO_1R;KSFO_28L;KSFO_28R;KSJC_12L;KSJC_12R;KSJC_30L;KSJC_30R;KSLC_16L;KSLC_16R;KSLC_17;KSLC_34L;KSLC_34R;KSLC_35;KSMF_17L;KSMF_17R;KSMF_35L;KSMF_35R;KSNA_20R;KSNA_2L;KSTL_11;KSTL_12L;KSTL_24;KSTL_29;KSTL_30R;KSTL_6;KTPA_19L;KTPA_19R;KTPA_1L;KTPA_1R;LCLK_22;LCLK_4;LEAL_10;LEAL_28;LEBB_10;LEBB_12;LEBB_28;LEBB_30;LEBL_02;LEBL_06L;LEBL_06R;LEBL_20;LEBL_24L;LEBL_24R;LEIB_24;LEIB_6;LEMD_00L;LEMD_00R;LEMD_14L;LEMD_14R;LEMD_18L;LEMD_18R;LEMD_32L;LEMD_32R;LEMG_12;LEMG_13;LEMG_30;LEMG_31;LEPA_24L;LEPA_24R;LEPA_6L;LEPA_6R;LEVC_12;LEVC_30;LEZL_27;LEZL_9;LFBD_05;LFBD_11;LFBD_23;LFBD_29;LFBO_14L;LFBO_14R;LFBO_32L;LFBO_32R;LFLL_17L;LFLL_17R;LFLL_35L;LFLL_35R;LFML_13L;LFML_13R;LFML_31L;LFML_31R;LFMN_22L;LFMN_4R;LFPG_08L;LFPG_08R;LFPG_09L;LFPG_09R;LFPG_26L;LFPG_26R;LFPG_27L;LFPG_27R;LFPO_2;LFPO_20;LFPO_24;LFPO_25;LFPO_6;LFPO_7;LFRS_03;LFRS_21;LGAV_03L;LGAV_03R;LGAV_21L;LGAV_21R;LGIR_27;LGIR_9;LHBP_13L;LHBP_13R;LHBP_31L;LHBP_31R;LICC_08;LICC_26;LICJ_2;LICJ_20;LICJ_25;LICJ_7;LIMC_17L;LIMC_17R;LIMC_35L;LIMC_35R;LIME_10;LIME_28;LIML_00;LIML_18;LIPE_12;LIPE_30;LIRF_07;LIRF_16L;LIRF_16R;LIRF_25;LIRF_34L;LIRF_34R;LIRN_24;LIRN_6;LKPR_06;LKPR_24;LLBG_03;LLBG_12;LLBG_21;LLBG_30;LMML_05;LMML_13;LMML_23;LMML_31;LOWW_11;LOWW_16;LOWW_29;LOWW_34;LPFR_10;LPFR_28;LPPR_17;LPPR_35;LPPT_2;LPPT_20;LROP_08L;LROP_08R;LROP_26L;LROP_26R;LSGG_04;LSGG_22;LSZH_10;LSZH_14;LSZH_16;LSZH_28;LSZH_32;LSZH_34;LTAC_03C;LTAC_03R;LTAC_21C;LTAC_21L;LTAI_00C;LTAI_00L;LTAI_00R;LTAI_18C;LTAI_18L;LTAI_18R;LTBA_23;LTBA_5;LTBJ_16L;LTBJ_16R;LTBJ_34L;LTBJ_34R;LTFJ_06;LTFJ_24;LYBE_12;LYBE_30;MMGL_11;MMGL_29;MMMX_23L;MMMX_23R;MMMX_5L;MMMX_5R;MMMY_11;MMMY_16;MMMY_29;MMMY_34;MMTJ_09;MMTJ_27;MMUN_12L;MMUN_12R;MMUN_30L;MMUN_30R;MPTO_21L;MPTO_3R;MSLP_25;MSLP_7;NZAA_23L;NZAA_5R;OBBI_12L;OBBI_30R;OEDF_16L;OEDF_16R;OEDF_34L;OEDF_34R;OEJN_16C;OEJN_16L;OEJN_16R;OEJN_34C;OEJN_34L;OEJN_34R;OERK_15L;OERK_15R;OERK_33L;OERK_33R;OJAI_08L;OJAI_08R;OJAI_26L;OJAI_26R;OKBK_15L;OKBK_15R;OKBK_33L;OKBK_33R;OLBA_03;OLBA_17;OLBA_21;OLBA_35;OMAA_13L;OMAA_13R;OMAA_31L;OMAA_31R;OMDB_12L;OMDB_12R;OMDB_30L;OMDB_30R;OMSJ_12;OMSJ_30;OTHH_16L;OTHH_16R;OTHH_34L;OTHH_34R;PANC_15;PANC_33;PHNL_04L;PHNL_04R;PHNL_08R;PHNL_22L;PHNL_22R;PHNL_26L;PHOG_2;PHOG_20;PHOG_23;PHOG_5;RCTP_05L;RCTP_05R;RCTP_23L;RCTP_23R;RJAA_16L;RJAA_34R;RJBB_24L;RJBB_24R;RJBB_6L;RJBB_6R;RJFF_16;RJFF_34;RJGG_00;RJGG_18;RJTT_04;RJTT_05;RJTT_22;RJTT_23;RKPC_07;RKPC_13;RKPC_25;RKPC_31;RKPK_00R;RKPK_18L;RKSI_15L;RKSI_15R;RKSI_33L;RKSI_33R;RKSS_14L;RKSS_14R;RKSS_32L;RKSS_32R;RPLL_06;RPLL_24;RPVM_04;RPVM_22;SABE_13;SABE_31;SAEZ_11;SAEZ_17;SAEZ_29;SAEZ_35;SBGL_10;SBGL_28;SBGR_10L;SBGR_10R;SBGR_28L;SBGR_28R;SBSP_17R;SBSP_35L;SBSV_17;SBSV_35;SCEL_17R;SCEL_35L;SKBO_14L;SKBO_14R;SKBO_32L;SKBO_32R;SKCL_2;SKCL_20;SKRG_01;SKRG_19;TJSJ_10;TJSJ_26;TJSJ_28;TJSJ_8;UKBB_00L;UKBB_00R;UKBB_18L;UKBB_18R;ULLI_10L;ULLI_10R;ULLI_28L;ULLI_28R;UUDD_14R;UUDD_32L;UUEE_24C;UUEE_24L;UUEE_6C;UUEE_6R;UUWW_1;UUWW_19;UUWW_24;UUWW_6;VAAH_23;VAAH_5;VABB_14;VABB_32;VAPO_10;VAPO_28;VDPP_05;VDPP_23;VECC_01L;VECC_01R;VECC_19L;VECC_19R;VEGT_02;VEGT_20;VHHH_07R;VHHH_25L;VIDP_27;VIDP_9;VILK_27;VILK_9;VMMC_16;VMMC_34;VOBL_27R;VOBL_9L;VOCI_09;VOCI_27;VOHS_09L;VOHS_09R;VOHS_27L;VOHS_27R;VOMM_07;VOMM_12;VOMM_25;VOMM_30;VTBD_21L;VTBD_21R;VTBD_3L;VTBD_3R;VTBS_19L;VTBS_19R;VTBS_1L;VTBS_1R;VTCC_00;VTCC_18;VTSP_09;VTSP_27;VVCR_02L;VVCR_20R;VVDN_17L;VVDN_17R;VVDN_35L;VVDN_35R;VVNB_11R;VVNB_29L;VVTS_07L;VVTS_07R;VVTS_25L;VVTS_25R;WAAA_03;WAAA_13;WAAA_21;WAAA_31;WADD_09;WADD_27;WALL_07;WALL_25;WARR_10;WARR_28;WBKK_02;WBKK_20;WIHH_06;WIHH_24;WIII_07L;WIII_07R;WIII_25L;WIII_25R;WIMM_05;WIMM_23;WMKK_14L;WMKK_14R;WMKK_15;WMKK_32L;WMKK_32R;WMKK_33;WMKP_22;WMKP_4;WSSS_20C;WSSS_20R;WSSS_2C;WSSS_2L;YBBN_01L;YBBN_01R;YBBN_19L;YBBN_19R;YBCG_14;YBCG_32;YMML_16;YMML_27;YMML_34;YMML_9;YPAD_05;YPAD_12;YPAD_23;YPAD_30;YPPH_03;YPPH_06;YPPH_21;YPPH_24;YSSY_16L;YSSY_16R;YSSY_25;YSSY_34L;YSSY_34R;YSSY_7;ZBAA_00L;ZBAA_00R;ZBAA_01;ZBAA_18L;ZBAA_18R;ZBAA_19;ZBSJ_15;ZBSJ_33;ZBTJ_16L;ZBTJ_16R;ZBTJ_34L;ZBTJ_34R;ZBYN_13;ZBYN_31;ZGHA_00;ZGHA_18;ZGKL_01;ZGKL_19;ZGSZ_15;ZGSZ_16;ZGSZ_33;ZGSZ_34;ZHCC_12;ZHCC_30;ZHHH_22;ZHHH_4;ZJHK_09;ZJHK_27;ZJSY_08;ZJSY_26;ZLXN_11R;ZLXN_29L;ZLXY_05R;ZLXY_23L;ZPJH_16;ZPJH_34;ZPLJ_02;ZPLJ_20;ZPPP_22L;ZPPP_4R;ZSAM_23;ZSAM_5;ZSFZ_21;ZSFZ_3;ZSJN_1;ZSJN_19;ZSNB_13;ZSNB_31;ZSOF_15;ZSOF_33;ZSPD_16L;ZSPD_16R;ZSPD_17L;ZSPD_17R;ZSPD_34L;ZSPD_34R;ZSPD_35L;ZSPD_35R;ZSQZ_03;ZSQZ_21;ZSSS_00L;ZSSS_18R;ZSWX_03;ZSWX_21;ZUCK_02L;ZUCK_02R;ZUCK_20L;ZUCK_20R;ZUGY_1;ZUGY_19;ZUUU_02;ZUUU_02R;ZUUU_20;ZUUU_20L;ZWWW_25;ZWWW_7;ZYCC_24;ZYCC_6;ZYHB_23;ZYHB_5;ZYTX_24;ZYTX_6"/> 
+
+            <!-- Contraintes trajectoire :
+                 1) start > end (sens d'approche)
+                 2) stab >= end + 500   (zone de convergence assez large)
+                 3) start >= stab + 500 (trajectoire libre OU avant convergence) -->
+            <constraint name="dist_order"
+                        expressions=".\along_track_distance_start SUP .\along_track_distance_end"/>
+            <constraint name="stab_above_end"
+                        expressions=".\stabilization_distance_m SUPEQ .\along_track_distance_end + 500"/>
+            <constraint name="start_above_stab"
+                        expressions=".\along_track_distance_start SUPEQ .\stabilization_distance_m + 500"/>
+
+        </node>
+
+
+        <!-- ===========================================================
+             METEO X-Plane 12 (per-scenario, injectee 1x avant rendu)
+             ===========================================================
+             COMPORTEMENT :
+               - Pluie seule    (precip > 0, cloud_type = -1) : Cumulonimbus auto
+               - Nuages seuls   (cloud_type >= 0, precip = 0) : nuages manuels
+               - Pluie + nuages (precip > 0, cloud_type >= 0) : nuages manuels
+               - Rien           (precip = 0, cloud_type = -1) : pas d'injection
+
+             cloud_type enum : 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus, -1=auto
+
+             Ce fichier (base.xml) garde des valeurs meteo de base.
+             Les variantes de profil (brouillard, nuages, pluie, neige, clair)
+             sont generees dans templates/<profil>/ par :
+                 py scripts/build_weather_templates.py
+             Le generateur remplace UNIQUEMENT les 8 parametres situes entre
+             @@WEATHER_BLOCK_START@@ et @@WEATHER_BLOCK_END@@. Le reste
+             (weather_effect_duration, node settings) est commun a tous.
+        -->
+        <node name="weather">
+
+            <!-- @@WEATHER_BLOCK_START@@ -->
+
+            <!-- Precipitation (0 = aucune ; >0 + cloud_type=-1 => Cb auto) -->
+            <parameter name="precip_rate"         type="real" min="1" max="1"/>
+
+            <!-- -1=Cb auto, 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus -->
+            <parameter name="cloud_type"          type="real" min="1" max="3"/>
+
+            <!-- Couverture nuageuse [0-1] -->
+            <parameter name="cloud_coverage"      type="real" min="1" max="1"/>
+
+            <!-- Epaisseur nuage (m) ; 0 => pas de particules -->
+            <parameter name="cloud_thickness_m"   type="real" min="500" max="500"/>
+
+            <!-- Visibilite (m) -->
+            <parameter name="fog_visibility"      type="real" min="50000" max="50000"/>
+
+            <!-- Temperature (C) ; < 0 => precip basculee en neige -->
+            <parameter name="temperature_c"       type="real" min="-15" max="-15"/>
+
+            <!-- Taille gouttes (visuel) ; ignore si precip=0 -->
+            <parameter name="rain_scale"          type="real" min="2" max="4"/>
+
+            <!-- Marge base nuages au-dessus de l'avion (m) -->
+            <parameter name="cloud_margin_m"      type="real" min="500" max="1800"/>
+
+            <!-- @@WEATHER_BLOCK_END@@ -->
+
+
+            <!-- Param meteo commun a TOUS les profils : jamais remplace par
+                 build_weather_templates.py.
+                 Délai accumulation effets sol : flaques de pluie / couche de
+                 neige. Ignoré si precip_rate=0. Mettre 0 pour de la pluie
+                 SANS accumulation. -->
+            <parameter name="weather_effect_duration" type="real" min="15"     max="15"/>
+
+        </node>
+
+
+        <!-- ===========================================================
+             SETTINGS : reglages de rendu / sim, communs a tous les profils
+             ===========================================================
+             Parametres independants de la meteo et des fautes capteur.
+             Jamais remplaces par build_weather_templates.py.
+        -->
+        <node name="settings">
+
+            <!-- Heure du jour locale (conversion UTC via fuseau politique) -->
+            <parameter name="time_of_day_h"           type="real" min="12"    max="12"/>
+
+            <!-- Délai chargement textures de la zone + stabilisation nuages GPU
+                 (vitesse sim normale). Appliqué à TOUS les scénarios. -->
+            <parameter name="load_texture_duration"   type="real" min="15"     max="15"/>
+
+            <!-- Délai stabilisation pose APRES chaque téléportation caméra (s). -->
+            <parameter name="screenshot_duration"     type="real" min="0.07"  max="0.07"/>
+
+            <!-- Rayon de la zone meteo injectee dans XPLMWeather (nm ; 1 nm = 1.852 km).
+                 Plus le rayon est petit, plus la meteo est concentree localement.
+                 Plus il est grand, plus on voit les nuages au loin.
+                 Recommendation =50 pour utilisation générale (effets météos constants), ou plusieurs centaines pour effets plus jolis -->
+            <parameter name="weather_zone_radius_nm"  type="real" min="50"    max="50"/>
+
+        </node>
+
+
+        <!-- ===========================================================
+             FAUTES CAPTEUR : 26 sub-nodes, params propres a chaque faute
+             ===========================================================
+             Pour activer une faute :
+               1) severity min/max > 0
+               2) ajuster start_pct + duration_pct selon le moment souhaite
+
+             Plusieurs fautes se cumulent si leurs plages se chevauchent.
+        -->
+        <node name="faults">
+
+            <!-- ===== Bruits ===== -->
+            <node name="gaussian_noise">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="shot_noise">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="salt_pepper">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="dead_pixels">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+
+            <!-- ===== Flous ===== -->
+            <node name="motion_blur">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="defocus_blur">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <!-- Flou type verre depoli (albumentations.GlassBlur mode 'fast') :
+                 permutations locales de pixels + flou gaussien. Simule
+                 lentille sale/gelee/condensee. severity 0=leger, 1=fort. -->
+            <node name="glass_blur">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="rolling_shutter">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+
+            <!-- ===== Exposition ===== -->
+            <node name="overexposure">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="underexposure">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+
+            <!-- ===== Optique ===== -->
+            <node name="vignetting">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="chromatic_aberration">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="radial_distortion">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="lens_flare">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+
+            <!-- ===== Artefacts ===== -->
+            <node name="banding">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="jpeg_artifacts">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="color_shift">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <!-- Permutation explicite : (c0, c1, c2) = ordre des canaux, c.f. albumentations ChannelShuffle.
+                 severity < 0.5 : applique sur BGR natif ; >= 0.5 : applique sur HSV.
+                 Contraintes DIF -> c0/c1/c2 forment une vraie permutation (pas de duplication). -->
+            <node name="channel_swap">
+                <parameter name="severity"     type="real"    min="0"   max="0"/>
+                <parameter name="start_pct"    type="real"    min="10"   max="10"/>
+                <parameter name="duration_pct" type="real"    min="50" max="50"/>
+                <parameter name="c0"           type="integer" min="2"   max="2"/>
+                <parameter name="c1"           type="integer" min="1"   max="1"/>
+                <parameter name="c2"           type="integer" min="0"   max="0"/>
+                <constraint name="bounded"  expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+                <constraint name="perm_01"  expressions=".\c0 DIF .\c1"/>
+                <constraint name="perm_02"  expressions=".\c0 DIF .\c2"/>
+                <constraint name="perm_12"  expressions=".\c1 DIF .\c2"/>
+            </node>
+
+            <!-- ===== Salissure / environnement ===== -->
+            <node name="condensation">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="dirt_on_lens">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <!-- Gouttelettes / eclaboussures sur la lentille
+                 (albumentations.Spatter mode 'rain') : seul gauss_sigma depend
+                 de severity (2 -> 5), bcp de gouttelettes -> peu de gouttes-->
+            <node name="droplets">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="fog">
+                <parameter name="severity"     type="real" min="0.3"   max="0.7"/>
+                <parameter name="start_pct"    type="real" min="20"   max="40"/>
+                <parameter name="duration_pct" type="real" min="20" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <!-- Neige (albumentations.RandomSnow methode bleach) : blanchiment HLS
+                 des pixels au-dessus d'un seuil. severity 0=leger, 1=lourd. -->
+            <node name="snow">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+
+            <!-- ===== Transformations geometriques ===== -->
+            <node name="zoom_blur">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="contrast">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+            <node name="pixelate">
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
+                <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
+            </node>
+
+        </node>
+
+    </node>
+
+</root>

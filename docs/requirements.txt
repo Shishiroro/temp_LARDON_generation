@@ -1,0 +1,34 @@
+# Base : generate + export (rendu X-Plane, fautes capteur, GT LARD)
+# Installe seulement ce batch si tu n'evalues pas (pas de PyTorch ~2-3 Go).
+#   pip install -r requirements.txt          (ou : uv pip install -r requirements.txt)
+# Pour l'evaluation (Phase 3 / YOLO), voir requirements-eval.txt
+
+# Core pipeline (generate)
+numpy
+pyproj
+pyyaml
+scikit-spatial
+scipy>=1.11
+z3-solver
+
+# X-Plane capture + meteo (export)
+mss
+Pillow
+opencv-python
+timezonefinder
+pytz
+
+# Fautes capteur camera (glass_blur, snow)
+albumentations
+
+# Visualisations (features notebook : bounding boxes)
+matplotlib
+
+# Notebook (kernel Jupyter)
+ipykernel
+
+# Windows only (gestion fenetre X-Plane, DPI-aware)
+pywin32; sys_platform == "win32"
+
+# Linux only (gestion fenetre X-Plane, sans droits systeme)
+python-xlib; sys_platform == "linux"

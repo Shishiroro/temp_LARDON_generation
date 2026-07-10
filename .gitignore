@@ -1,0 +1,54 @@
+# Clones externes — ne pas modifier, importer uniquement
+LARD/
+taf/
+
+# Scenarios generes
+output/
+runs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.ruff_cache/
+
+# Jupyter (notebook/)
+.ipynb_checkpoints/
+
+# Outils locaux non versionnes
+tools/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Banc d'evaluation (SUT YOLOv8)
+evaluation/yolo/output/
+evaluation/yolo/test_images/
+
+# Outil d'analyse local (sweep robustesse YOLO) — non versionne
+evaluation/fault_sweep.py
+
+# Etude moniteurs (travail local non versionne)
+moniteursEtude/
+
+# Poids YOLO : ne versionner que best.pt
+evaluation/yolo/weights/yolov8nTest.pt
+evaluation/yolo/weights/last.pt
+
+# Docs internes
+CLAUDE.md
+
+# Claude Code
+.claude/
+
+# Tests (locaux, non versionnes)
+tests/
+
+
