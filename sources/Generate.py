@@ -18,6 +18,13 @@ import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from runs import (
+    TAF_OUTPUT_DIR, 
+    clean_runs_dir, 
+    create_runs_from_taf_output,
+    next_generation_dir
+)
+
 
 def _precreate_output_dirs(project_dir):
     """
@@ -212,10 +219,6 @@ def generate_runs(nb_scenarios=None, name=None, clean=False, runway=None):
     :param runway: force toutes les generations sur une piste (format ICAO_RWY)
     :return: list[Path] des dossiers runs/<generation>/<ICAO_RWY>/ crees
     """
-    import shutil
-    from runs import (TAF_OUTPUT_DIR, clean_runs_dir, create_runs_from_taf_output,
-                      next_generation_dir)
-
     print("=" * 60)
     print(" PHASE 1 : Generation TAF")
     print("=" * 60)

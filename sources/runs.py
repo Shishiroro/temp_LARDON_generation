@@ -285,7 +285,7 @@ def _render_loop(runs, xplane_dir):
     effectivement rendus.
     """
     from Export import render_run
-    from xplane_weather import reset_if_active
+    from export.xplane_weather import reset_if_active
 
     rendered = []
     for run_dir in runs:
