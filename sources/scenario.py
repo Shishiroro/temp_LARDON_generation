@@ -10,10 +10,13 @@ Deux arbres de sortie distincts :
       [fault_profile.json]                      si fautes actives
       [weather_profile.json]                    si meteo active
 
-  dataset/<simulator>/<airport_runway>/<scenario_name>/   (produit par 'export')
-      images/                                   rendu simulateur
-      corrupted_images/                         images + fautes capteur
-      metadata.csv                              verite terrain LARD (GT)
+  dataset/<simulator>/                                    (produit par 'export')
+      metadata.csv                              GT consolidee (tous scenarios du simulateur)
+      <airport_runway>/<scenario_name>/
+          images/                               rendu simulateur
+          corrupted_images/                     images + fautes capteur
+          labels_lard.csv                       GT LARD brute (toutes pistes)
+          metadata.csv                          GT enrichie (ce scenario)
 
 Conventions de nommage :
   <batch>          = <default|nom>__<timestamp>

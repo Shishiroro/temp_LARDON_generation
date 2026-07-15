@@ -74,10 +74,12 @@ Structure de sortie :
     <scenario_name>.esp                     <- projet GES (best-effort)
     [fault_profile.json / weather_profile.json]
 
-  dataset/<simulator>/<airport_runway>/<scenario_name>/   <- 'export' (Phase 2)
-    images/                                 <- rendu simulateur
-    corrupted_images/                       <- images + fautes capteur
-    metadata.csv                            <- verite terrain LARD (GT)
+  dataset/<simulator>/                                    <- 'export' (Phase 2)
+    metadata.csv                            <- GT consolidee (tous scenarios du simulateur)
+    <airport_runway>/<scenario_name>/
+      images/                               <- rendu simulateur
+      corrupted_images/                     <- images + fautes capteur
+      metadata.csv                          <- verite terrain LARD (ce scenario)
 
   <batch>          = <default|nom>__<timestamp>
   <scenario_name>  = <airport>-<runway>__<nb_smpl>-smpl__<timestamp>__<indx>

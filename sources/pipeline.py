@@ -11,6 +11,7 @@ scenario <-> taf_export / taf_generate : ici on importe les trois en tete.
 from scenario import find_scenarios
 from taf_export import render_scenario_run
 from taf_generate import generate_runs
+from metadata import build_simulator_metadata
 from xplane_weather import reset_if_active
 
 
@@ -27,6 +28,9 @@ def _render_loop(scenarios, simulator, xplane_dir):
         out = render_scenario_run(sdir, simulator=simulator, xplane_dir=xplane_dir)
         if out:
             rendered.append(out)
+    if rendered:
+        # metadata.csv consolide au niveau du simulateur (agrege tous les scenarios)
+        build_simulator_metadata(simulator)
     if simulator == "xplane":
         reset_if_active(xplane_dir)
     return rendered

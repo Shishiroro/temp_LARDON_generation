@@ -14,7 +14,7 @@ import json
 import re
 from pathlib import Path
 
-from scenario import list_images, airport_runway_from_scenario
+from scenario import list_images, airport_runway_from_scenario, DATASET_DIR
 from runway_utils import reciprocal_runway
 
 # Colonnes du metadata.csv — alignees sur l'ancien build_dataset / CSV LARD.
@@ -183,4 +183,41 @@ def build_metadata_csv(scenario_dir, images_dir, gt_csv, simulator, out_csv):
         w.writeheader()
         w.writerows(rows)
     print(f"  metadata.csv -> {out_csv} ({len(rows)} lignes)")
+    return str(out_csv)
+
+
+def build_simulator_metadata(simulator):
+    """Reconstruit dataset/<simulator>/metadata.csv en agregeant les metadata.csv
+    de tous les scenarios rendus avec ce simulateur.
+
+    Le chemin `image` est reecrit relativement au dossier <simulator>/ :
+        images/<fichier>  ->  <airport_runway>/<scenario>/images/<fichier>
+    Reconstruit integralement a chaque appel (idempotent) : appele a la fin de
+    chaque session d'export pour tenir le CSV consolide a jour.
+
+    :return: chemin du metadata.csv consolide, ou None si le simulateur n'a
+             encore aucun scenario rendu.
+    """
+    sim_dir = DATASET_DIR / simulator
+    scen_metas = sorted(sim_dir.glob("*/*/metadata.csv"))  # <icao>/<scenario>/metadata.csv
+    if not scen_metas:
+        return None
+
+    rows = []
+    for scen_meta in scen_metas:
+        rel_prefix = scen_meta.parent.relative_to(sim_dir).as_posix()  # <icao>/<scenario>
+        with open(scen_meta, newline="") as f:
+            for r in csv.DictReader(f):
+                row = {c: r.get(c, "") for c in META_COLS}
+                if row["image"]:
+                    row["image"] = f"{rel_prefix}/{row['image']}"
+                rows.append(row)
+
+    out_csv = sim_dir / "metadata.csv"
+    with open(out_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=META_COLS)
+        w.writeheader()
+        w.writerows(rows)
+    print(f"  metadata.csv (simulateur '{simulator}') -> {out_csv} "
+          f"({len(rows)} lignes, {len(scen_metas)} scenarios)")
     return str(out_csv)
