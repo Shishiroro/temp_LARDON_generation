@@ -1,15 +1,16 @@
 """
-Generate.py — Lance TAF pour generer des scenarios d'approche
-=============================================================
+taf_generate.py — Lance TAF pour generer des scenarios d'approche
+=================================================================
 Utilisation :
-    python sources/Generate.py          (depuis la racine)
-    python Generate.py                  (depuis sources/)
+    python sources/taf_generate.py      (depuis la racine)
+    python taf_generate.py              (depuis sources/)
 
 Ce script :
     1. Se place dans sources/ (CWD requis par TAF pour settings.xml)
-    2. Insere sources/export/ en tete de sys.path (notre Export.py)
+    2. Insere sources/ en tete de sys.path (imports plats du projet)
     3. Insere taf/src/ dans sys.path (modules TAF)
-    4. Lance TAF : parse template → z3 solve → export()
+    4. Copie taf_export.py -> taf/src/Export.py (point d'extension TAF)
+    5. Lance TAF : parse template → z3 solve → export()
 """
 
 import sys
@@ -18,11 +19,14 @@ import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from runs import (
-    TAF_OUTPUT_DIR, 
-    clean_runs_dir, 
-    create_runs_from_taf_output,
-    next_generation_dir
+from config import TAF_SRC
+from ges_export import build_esp_for_scenario
+from scenario import (
+    TAF_OUTPUT_DIR,
+    clean_scenarios_dir,
+    create_scenarios_from_taf_output,
+    new_batch_dir,
+    timestamp_now,
 )
 
 
@@ -117,19 +121,25 @@ def run(nb_test_cases=None, runway=None, verbose=True):
     # CWD = sources/ (TAF lit ./settings.xml depuis le CWD)
     os.chdir(project_dir)
 
-    # sys.path : centralise via _paths + taf/src/ (specifique TAF)
+    # sys.path : sources/ (imports plats) + taf/src/ (modules TAF)
     if str(project_dir) not in sys.path:
         sys.path.insert(0, str(project_dir))
-    import _paths  # noqa: F401  # ajoute ROOT, project, export, yolo, eval, LARD
-    taf_src = str(_paths.TAF_SRC)
+    taf_src = str(TAF_SRC)
     if taf_src not in sys.path:
         sys.path.insert(1, taf_src)
 
     # Copier notre Export.py dans taf/src/ (point d'extension prevu par TAF).
-    # taf/src est resolu via _paths (honore le parametre taf_dir de settings.xml).
-    src_export = project_dir / "export" / "Export.py"
-    taf_export = _paths.TAF_SRC / "Export.py"
+    # taf/src est resolu via config (TAF_HOME / paths.local.json).
+    src_export = project_dir / "taf_export.py"
+    taf_export = TAF_SRC / "Export.py"
     shutil.copy2(src_export, taf_export)
+
+    # TAF lie notre export() AU CHARGEMENT (taf/src/Tree.py: `from Export import
+    # export`), pendant `import Taf`. sys.path a sources/ en tete : on place donc
+    # notre VRAI code (taf_export.py) sous le nom Export.py AVANT `import Taf`,
+    # pour que Tree lie notre export() et non le stub vide que
+    # create_minimal_export creerait sinon.
+    shutil.copy2(src_export, project_dir / "Export.py")
 
     # Surcharger nb_test_cases dans le XML avant import TAF (SETTINGS lit au module-level)
     if nb_test_cases is not None:
@@ -163,15 +173,6 @@ def run(nb_test_cases=None, runway=None, verbose=True):
         Taf.SETTINGS.get_setting_parameters()["template_file_name"] = tmp_template
         print(f"[Generate] Piste forcee : {runway}")
 
-    # Stub `./Export.py` requis par TAF (Export_Generator.create_export
-    # fait getsize sans tester l'existence). Normalement cree au 1er
-    # `import Taf` via create_minimal_export(), mais l'import est cache
-    # par le kernel Jupyter et le stub est supprime en fin de run() →
-    # on le recree defensivement a chaque appel.
-    stub = project_dir / "Export.py"
-    if not stub.exists():
-        stub.write_text("def export(root_node, path):\n\tpass")
-
     taf = Taf.CLI()
     taf.verbose = verbose
     taf.auto = True
@@ -187,10 +188,10 @@ def run(nb_test_cases=None, runway=None, verbose=True):
     taf.do_parse_template()
     taf.do_generate()
 
-    # Nettoyage : TAF cree parfois un stub Export.py dans le CWD
-    stub = project_dir / "Export.py"
-    if stub.exists() and stub.stat().st_size <= 50:
-        stub.unlink()
+    # Nettoyage : retirer la copie transitoire ./Export.py (CWD)
+    cwd_export = project_dir / "Export.py"
+    if cwd_export.exists():
+        cwd_export.unlink()
 
     # Restaurer le placeholder dans taf/src/ (garder taf/ propre)
     taf_export.write_text("def export(root_node, path):\n\tpass\n")
@@ -207,34 +208,42 @@ def run(nb_test_cases=None, runway=None, verbose=True):
 
 
 def generate_runs(nb_scenarios=None, name=None, clean=False, runway=None):
-    """Phase 1 complete : cleanup output/ + run() TAF + organize en runs/<generation>/.
+    """Phase 1 complete : cleanup output/ + run() TAF + organise en scenarios/<batch>/.
 
     Wrapper haut-niveau de run() : nettoie le dossier temporaire output/,
-    lance la generation TAF, puis reorganise les .yaml + JSON configs vers
-    runs/<generation>/<ICAO_RWY>/.
+    lance la generation TAF, puis reorganise les .yaml + poses vers
+    scenarios/<batch>/<scenario_name>/ (+ .esp best-effort).
 
-    :param name: nom optionnel de la generation (genere `<name>_NN/`
-                 au lieu de `generation_NN/`)
-    :param clean: si True, vide runs/ avant la generation
+    :param name: nom optionnel du batch (genere `<name>__<timestamp>/`
+                 au lieu de `default__<timestamp>/`)
+    :param clean: si True, vide scenarios/ avant la generation
     :param runway: force toutes les generations sur une piste (format ICAO_RWY)
-    :return: list[Path] des dossiers runs/<generation>/<ICAO_RWY>/ crees
+    :return: list[Path] des dossiers scenarios/<batch>/<scenario_name>/ crees
     """
     print("=" * 60)
     print(" PHASE 1 : Generation TAF")
     print("=" * 60)
 
     if clean:
-        clean_runs_dir()
+        clean_scenarios_dir()
 
-    generation_dir = next_generation_dir(name)
-    print(f"[Pipeline] Generation : {generation_dir.name}/")
+    ts = timestamp_now()
+    batch_dir = new_batch_dir(name, timestamp=ts)
+    print(f"[Pipeline] Batch : {batch_dir.name}/")
 
     if TAF_OUTPUT_DIR.exists():
         shutil.rmtree(TAF_OUTPUT_DIR)
 
     run(nb_test_cases=nb_scenarios, runway=runway)
 
-    return create_runs_from_taf_output(generation_dir)
+    created = create_scenarios_from_taf_output(batch_dir, ts)
+
+    # .esp (GES) pour chaque scenario, via LARD/GEODataset.
+    for sdir in created:
+        out = build_esp_for_scenario(sdir)
+        print(f"  [ESP] {sdir.name} -> {Path(out).name}")
+
+    return created
 
 
 if __name__ == "__main__":
@@ -246,7 +255,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default=None,
                         help="Nom de la generation (sinon 'generation')")
     parser.add_argument("--clean", action="store_true",
-                        help="Vider runs/ avant la generation")
+                        help="Vider scenarios/ avant la generation")
     parser.add_argument("--runway", type=str, default=None,
                         help="Forcer une piste (format ICAO_RWY, ex LFPO_24)")
     args = parser.parse_args()

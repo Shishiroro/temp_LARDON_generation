@@ -5,12 +5,15 @@ taf/
 # Scenarios generes
 output/
 runs/
+scenarios/
+dataset/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 .venv/
+.venv*/
 venv/
 .ruff_cache/
 
@@ -52,3 +55,6 @@ CLAUDE.md
 tests/
 
 
+
+# Recap local de la restructuration (non pousse)
+MODIFICATIONS.txt

@@ -21,23 +21,34 @@ from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import asdict
 
-# Bootstrap sys.path via sources/_paths.py (parent de sources/export/)
-_PROJECT_DIR = Path(__file__).resolve().parent.parent
-if str(_PROJECT_DIR) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_DIR))
-import _paths  # noqa: F401
+from config import LARD_ROOT, PROJECT_ROOT
 
-LARD_ROOT = _paths.LARD_ROOT
-PROJECT_ROOT = _paths.ROOT
+
+def _ensure_lard_importable():
+    """Rend LARD importable (`from src....`) en ajoutant sa racine au sys.path.
+
+    LARD n'est pas un package installable : son code s'importe lui-meme en
+    `from src....` et lit ses donnees relativement au CWD. On resout sa
+    localisation via config (LARD_HOME / paths.local.json) et on l'ajoute au
+    sys.path ici, une seule fois — toute la connaissance de LARD est confinee
+    a ce module (remplace le _paths.py global).
+    """
+    lard = str(LARD_ROOT)
+    if lard not in sys.path:
+        sys.path.insert(0, lard)
+
+
+_ensure_lard_importable()
+
 # DB LARD X-Plane (meme DB que le labeling LARD pour coherence trajectoire/GT)
 RUNWAY_DB_XPLANE = str(LARD_ROOT / "data" / "runways_db_V2_XPlane.json")
 
-# TODO: modify the way to import LARD.. make it a package you can import instead of using LARD as it is your project
+# LARD (branche LARD_V2) — importe via _ensure_lard_importable() ci-dessus.
 from src.geo.geo_dataset import compute_aiming_point
 from src.geo.geo_utils import ecef2llh
 from src.labeling.label_export import export_labels
 from src.labeling.export_config import DatasetTypes
-from runway import reciprocal_runway, runway_from_run_name
+from runway_utils import reciprocal_runway, runway_from_run_name
 
 
 # ---------------------------------------------------------------------------
@@ -244,29 +255,27 @@ def export_scenario(flight_data, cfg, ou_params, airport, runway,
     return str(yaml_file)
 
 
-def generate_labels_csv(yaml_path, dataset_dir, csv_name=None):
+def generate_labels_csv(yaml_path, out_dir, images_dir, csv_name="metadata.csv"):
     """
-    Genere le .csv ground truth LARD a partir du .yaml et des images dans footage/.
-    A appeler APRES avoir recupere les images X-Plane.
+    Genere le CSV verite terrain LARD a partir du .yaml et des images.
+    A appeler APRES avoir recupere les images du simulateur.
 
     :param yaml_path: chemin vers le .yaml du scenario
-    :param dataset_dir: dossier contenant footage/ avec les images
-    :param csv_name: nom du fichier CSV (defaut: <yaml_stem>_labels.csv)
+    :param out_dir: dossier de sortie du CSV (dataset .../<scenario>/)
+    :param images_dir: dossier contenant les images (dataset .../images/)
+    :param csv_name: nom du fichier CSV (defaut: metadata.csv)
     """
     yaml_path = Path(yaml_path).resolve()
-    dataset_dir = Path(dataset_dir).resolve()
+    out_dir = Path(out_dir).resolve()
+    images_dir = Path(images_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    if csv_name is None:
-        csv_name = f"{yaml_path.stem}_labels.csv"
-    csv_file = dataset_dir / csv_name
-    footage_dir = dataset_dir / "footage"
+    csv_file = out_dir / csv_name
 
-    # LARD recopie les images dans `out_images_dir` (typiquement exported_images/)
-    # avant de generer le CSV. On veut juste pointer ce CSV sur les images deja
-    # presentes dans footage/, sans duplication.
-    # Astuce : on passe out_images_dir = footage_dir et on monkey-patch shutil
-    # dans le module label_export pour qu'une copie src->dst identique soit
-    # un no-op au lieu d'une SameFileError. Le patch est local au module et
+    # LARD recopie les images dans `out_images_dir` avant de generer le CSV.
+    # On pointe out_images_dir sur images/ (images deja presentes) et on
+    # monkey-patch shutil dans label_export pour qu'une copie src->dst
+    # identique soit un no-op au lieu d'une SameFileError. Patch local,
     # restaure dans le finally en sortie.
     import src.labeling.label_export as _le
     import shutil as _real_shutil
@@ -288,14 +297,14 @@ def generate_labels_csv(yaml_path, dataset_dir, csv_name=None):
             export_labels(
                 dataset_type=DatasetTypes.XPLANE,
                 yaml_scenario_path=yaml_path,
-                export_dir=dataset_dir,
+                export_dir=out_dir,
                 out_labels_file=csv_file,
-                out_images_dir=footage_dir,
+                out_images_dir=images_dir,
             )
     finally:
         _le.shutil = _orig_shutil
 
-    print(f"  .csv GT -> {csv_file}")
+    print(f"  metadata.csv (GT) -> {csv_file}")
     return str(csv_file)
 
 
@@ -303,26 +312,27 @@ def generate_labels_csv(yaml_path, dataset_dir, csv_name=None):
 # Generation GT pour un run + annotation visuelle
 # ---------------------------------------------------------------------------
 
-def generate_gt(run_dir):
-    """Genere le CSV ground truth LARD pour un run.
+def generate_gt_csv(scenario_dir, out_dir, images_dir):
+    """Genere le CSV verite terrain LARD brut (labels_lard.csv) pour un scenario.
 
-    Lit run_dir/<stem>.yaml et les images dans run_dir/footage/, ecrit
-    run_dir/<stem>_labels.csv.
+    Lit le .yaml de scenario_dir et les images de images_dir, ecrit
+    out_dir/labels_lard.csv. Ce CSV brut est ensuite enrichi en metadata.csv
+    par metadata.build_metadata_csv.
 
-    :return: Path du CSV genere
+    :param scenario_dir: dossier scenarios/<batch>/<scenario_name>/ (contient le .yaml)
+    :param out_dir: dossier dataset .../<scenario_name>/ (sortie du CSV)
+    :param images_dir: dossier des images (dataset .../images/)
+    :return: Path du CSV GT brut
     """
-    from pathlib import Path
-    run_dir = Path(run_dir)
-    yamls = list(run_dir.glob("*.yaml"))
+    scenario_dir = Path(scenario_dir)
+    yamls = list(scenario_dir.glob("*.yaml"))
     if not yamls:
-        raise FileNotFoundError(f"Pas de .yaml dans {run_dir}")
-    yaml_path = yamls[0]
+        raise FileNotFoundError(f"Pas de .yaml dans {scenario_dir}")
 
-    print(f"\n  [GT] Generation CSV pour {run_dir.name}...")
-
+    print(f"\n  [GT] labels LARD pour {scenario_dir.name}...")
     csv_file = generate_labels_csv(
-        yaml_path=str(yaml_path),
-        dataset_dir=str(run_dir),
+        yaml_path=str(yamls[0]), out_dir=str(out_dir), images_dir=str(images_dir),
+        csv_name="labels_lard.csv",
     )
     return Path(csv_file)
 

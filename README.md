@@ -47,18 +47,28 @@ git clone https://gitlab.laas.fr/trust_ml_safety/LARDON
 cd LARDON
 ```
 
-### 2. Récupérer LARD
+### 2. Récupérer LARD (branche `LARD_V2`)
 
-LARD n'est **pas** inclus dans le dépôt. Depuis la racine du projet :
+LARD n'est **pas** inclus dans le dépôt et **n'est pas un package pip**. Un script
+le clone à la bonne version (branche **`LARD_V2`**, requise par le pont LARD) et
+installe ses dépendances :
 
 ```bash
-git clone https://github.com/deel-ai/LARD
+py scripts/install_lard.py
 ```
 
-Le dossier `LARD/` doit se trouver à la racine, à côté de `sources/`.
+Équivalent manuel :
 
-> Vous avez déjà LARD installé ailleurs ? Inutile de le re-cloner : renseignez son
-> chemin absolu dans `sources/settings.xml` via le paramètre `lard_dir`.
+```bash
+git clone -b LARD_V2 https://github.com/deel-ai/LARD
+```
+
+> ⚠️ La branche **doit** être `LARD_V2` : `main` (= `LARD_V1`) n'a pas `src/geo/`,
+> les imports `from src.geo...` casseraient.
+>
+> LARD déjà présent ailleurs (n'importe où sur le PC) ? Indiquez son chemin
+> **absolu** dans `paths.local.json` à la racine (clé `lard_dir`). Voir
+> `paths.local.json.example`.
 
 ### 3. Récupérer TAF
 
@@ -70,48 +80,43 @@ git clone https://redmine.laas.fr/laas/taf.git
 
 *Plus de détails sur TAF : <https://wp.laas.fr/taf/download/>*
 
-> Vous avez déjà TAF installé ailleurs ? Renseignez son chemin absolu dans
-> `sources/settings.xml` via le paramètre `taf_dir`.
+> Vous avez déjà TAF ailleurs (n'importe où sur le PC) ? Indiquez son chemin
+> **absolu** dans `paths.local.json` (clé `taf_dir`).
 
 Après les étapes 1 à 3, la racine doit contenir :
 
 ```
-ProjetLAASMonitoring/
-├── sources/         # usine à données (génération + rendu X-Plane + GT)
-├── evaluation/      # banc d'évaluation (SUT : YOLO, futurs moniteurs)
-├── scripts/
+lardon/
+├── sources/            # usine à données (génération + rendu + GT LARD)
+├── scripts/            # install_lard.py, plugin météo, build templates…
 ├── XPlanePlugin/
-├── notebook/
-├── run_pipeline.py
+├── notebooks/
+├── main.py             # CLI (generate / export / full)
+├── config.py           # (dans sources/) résolution des chemins externes
+├── paths.local.json    # (non versionné) chemins ABSOLUS LARD/TAF/X-Plane de la machine
+├── requirements.txt
 └── docs/
-    ├── requirements.txt
-    └── requirements-eval.txt
 ```
+
+> L'évaluation (YOLO/IoU) a été extraite dans un **projet séparé** : ce dépôt ne
+> contient plus que l'usine à données (génération + rendu + vérité terrain).
 
 ### 4. Installer les dépendances Python
 
-Les dépendances sont séparées en **deux batchs** pour ne pas imposer PyTorch
-
-| Batch | Fichier | Phases couvertes |
-|-------|---------|------------------|
-| **base** | `docs/requirements.txt` | `generate` + `export` (rendu X-Plane, fautes capteur, vérité terrain LARD) |
-| **eval** | `docs/requirements-eval.txt` | base **+** détection YOLO / IoU (Phase 3, tire PyTorch) |
-
 ```bash
-# Créer l'environnement (une seule fois)
+# Créer + activer l'environnement (une seule fois)
 py -m venv .venv
-
-# L'activer
 .venv\Scripts\activate        # Windows (PowerShell / cmd)
 source .venv/bin/activate     # Linux / macOS
 
-# Installer le batch voulu
-pip install -r docs/requirements.txt          # base : generate + export
-pip install -r docs/requirements-eval.txt     # complet : + évaluation YOLO/IoU
+# Dépendances de l'usine (generate + export)
+pip install -r requirements.txt
 ```
 
-> Installeur plus rapide ? Voir l'alternative **uv** :
-> [docs/INSTALLATION_UV.md](docs/INSTALLATION_UV.md).
+> Alternative **uv** : voir [docs/INSTALLATION_UV.md](docs/INSTALLATION_UV.md).
+> (Un `pyproject.toml` pour uv reste à ajouter — ticket @mathieu.)
+>
+> Pas de PyTorch ici : l'évaluation (YOLO/IoU) vit dans un projet séparé.
 
 ### 5. Installer le plugin météo dans X-Plane 12
 
@@ -251,82 +256,69 @@ template par les pistes de la démo présentes dans la DB LARD XP12 :
 ## Lancer l'outil
 
 ```bash
-# Phase 1 — génère les scénarios (.yaml + poses caméra) dans runs/generation_01/
-py run_pipeline.py generate -n 5
+# Phase 1 — génère les scénarios (.yaml + .json poses + .esp) dans scenarios/<batch>/
+py main.py generate -n 5
 
 # Phase 2 — rendu X-Plane + fautes capteur + vérité terrain LARD
-py run_pipeline.py export --all --generation generation_01
+py main.py export --all --batch <batch>
 
-# Phase 3 — détection + calcul IoU vs vérité terrain
-py run_pipeline.py evaluate --all --generation generation_01
+# Tout enchaîner (génération + rendu)
+py main.py full -n 5
 
-# Tout enchaîner d'un coup (cycle complet avec évaluation)
-py run_pipeline.py full_evaluate -n 5
+# Rendu GES (externe : produit l'arborescence dataset/GES/… ; images à déposer par GES)
+py main.py export --all --batch <batch> --simulator GES
 
-# Forcer une piste précise (sinon TAF échantillonne parmi les ~980 du template)
-py run_pipeline.py generate -n 10 --runway LFPO_24
+# Forcer une piste précise (sinon TAF échantillonne parmi le template)
+py main.py generate -n 10 --runway LFPO_24
 ```
 
-**Pour une utilisation normale, la commande `full_evaluate` suffit** : elle
-enchaîne les trois phases en une seule invocation. La commande `full`, elle,
-n'enchaîne **que** la génération et le rendu (Phases 1 + 2, sans évaluation). Les
-commandes `generate` / `export` / `evaluate` restent disponibles pour relancer
-une phase précise.
+Où `<batch>` est le dossier créé par `generate` (format `<nom|default>__<timestamp>`,
+affiché en fin de génération).
 
-> En mode `--all`, l'option `--generation <nom>` est obligatoire (elle évite de
-> mélanger plusieurs batchs). Pour cibler un seul scénario, utiliser le chemin
-> composé, ex. `export generation_01/LFPO_24`.
+> En mode `--all`, l'option `--batch <nom>` est obligatoire. Pour cibler un seul
+> scénario : chemin composé, ex. `export <batch>/<scenario_name>`.
 
-**Référence complète des commandes** (toutes les sous-commandes, toutes les
-options, workflows types et équivalents notebook) : voir
-[COMMANDES.md](docs/COMMANDES.md).
+**Référence complète des commandes** : voir [COMMANDES.md](docs/COMMANDES.md).
 
-Le chemin d'installation X-Plane 12 est renseigné une seule fois dans
-`sources/settings.xml` via le paramètre `xplane_dir` :
-
-```xml
-<parameter name="xplane_dir" type="path" value="C:/X-Plane 12" />
-```
-
-Les commandes le lisent automatiquement : **l'option `--xplane-dir` en ligne de
-commande n'est donc pas nécessaire** (elle ne sert qu'à surcharger ponctuellement
-ce chemin). Ce répertoire n'est utilisé que pour localiser le plugin météo ; le
+Le chemin X-Plane 12 est résolu par `config.py` (clé `xplane_dir` de
+`paths.local.json`). L'option `--xplane-dir` le surcharge
+ponctuellement. Ce répertoire ne sert qu'à localiser le plugin météo ; le
 positionnement et la capture d'images n'en dépendent pas.
 
 ---
 
 ## Résultats
 
-Chaque génération (batch) produit un dossier dans `runs/`, avec un sous-dossier
-par scénario (`<ICAO_RWY>`) :
+`generate` et `export` produisent **deux arbres distincts** :
 
 ```
-runs/
-└── generation_01/                  un batch (--name pour personnaliser)
-    ├── LFPO_24/                     un dossier par scénario (format ICAO_RWY)
-    │   ├── LFPO_24.yaml             scénario généré (Phase 1)
-    │   ├── poses_cam_export.json    poses caméra
-    │   ├── fault_profile.json       profil fautes capteur (si actif)
-    │   ├── weather_profile.json     profil météo X-Plane (si actif)
-    │   ├── footage/                 images rendues par X-Plane
-    │   ├── degraded/                images avec fautes capteur (si actives)
-    │   ├── LFPO_24_labels.csv       vérité terrain LARD (usine)
-    │   └── eval/yolo/               sorties d'éval, namespacées par SUT
-    │       ├── predictions.csv      détections du SUT
-    │       └── predictions_txt/     labels bruts du SUT
-    └── eval/yolo/pipeline_report.json   rapport agrégé : IoU, AP, F1, P, R par scénario
+scenarios/                              sortie de 'generate' (Phase 1)
+└── <batch>/                            <nom|default>__<timestamp>
+    └── <scenario_name>/                <airport>-<runway>__<nb>-smpl__<ts>__<i>
+        ├── <scenario_name>.yaml        scénario LARD (TAF)
+        ├── <scenario_name>.json        poses caméra
+        ├── <scenario_name>.esp         projet GES (best-effort, si LARD dispo)
+        ├── fault_profile.json          profil fautes capteur (si actif)
+        └── weather_profile.json        profil météo X-Plane (si actif)
+
+dataset/                                sortie de 'export' (Phase 2)
+└── <simulator>/                        xplane | GES
+    └── <airport_runway>/               ex: KPDX_10L
+        └── <scenario_name>/
+            ├── images/                 rendu simulateur
+            ├── corrupted_images/       images + fautes capteur (si actives)
+            └── metadata.csv            vérité terrain LARD (GT)
 ```
 
 ### Aller plus loin avec les notebooks
 
-Deux notebooks dans le dossier `notebook/` :
+Deux notebooks dans le dossier `notebooks/` :
 
-- **`notebook/generation.ipynb`** — reproduit les **trois phases de l'outil**
-  (`generate`, `export`, `evaluate`), exécutables séparément depuis ses cellules,
-  sans passer par la ligne de commande. Alternative complète au CLI.
-- **`notebook/features.ipynb`** — fonctionnalités complémentaires, à la demande :
-  - création de **datasets** à partir des images générées,
-  - assemblage des images d'un scénario en **flux vidéo**,
-  - export de **fichiers optionnels** (`params_trace.xml`, `xplane_config.json`),
-  - **visualisations des bounding boxes** (`yolo_box/`, `lard_box/`) pour comparer
-    prédictions du modèle et vérité terrain LARD.
+- **`notebooks/generation.ipynb`** — reproduit les phases `generate` / `export`
+  depuis des cellules, sans passer par la ligne de commande.
+- **`notebooks/features.ipynb`** — fonctionnalités complémentaires (datasets,
+  vidéo, `params_trace.xml`, `xplane_config.json`, visualisation des bounding
+  boxes GT LARD `lard_box/`).
+
+> Note : certains helpers de `notebooks/features.ipynb` ciblent encore l'ancien
+> layout (`runs/`, `footage/`) et doivent être adaptés au nouveau layout.

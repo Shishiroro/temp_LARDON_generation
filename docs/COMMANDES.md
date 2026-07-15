@@ -1,7 +1,16 @@
 # Référence des commandes
 
-Référence complète du CLI `run_pipeline.py` (toutes les sous-commandes et leurs
-options) et de ses équivalents notebook.
+> ⚠️ **Mise à jour en cours.** Le CLI est désormais **`main.py`** (plus
+> `run_pipeline.py`). L'**évaluation** (`evaluate` / `full_evaluate`, YOLO/IoU) a
+> été **retirée** (projet séparé). Le layout de sortie a changé : `runs/` →
+> **`scenarios/<batch>/`** (generate) + **`dataset/<simulator>/<airport_runway>/`**
+> (export) ; l'option `--generation` devient **`--batch`** ; nouvelle option
+> **`--simulator {xplane,GES}`**. Pour l'usage **à jour**, voir
+> [README.md](../README.md) → « Lancer l'outil ». Les sections détaillées
+> ci-dessous restent à migrer (noms/exemples anciens).
+
+Référence complète du CLI (toutes les sous-commandes et leurs options) et de ses
+équivalents notebook.
 
 - Pour l'**installation**, les **prérequis** et la **configuration des scénarios
   (XML)** → voir [README.md](../README.md).

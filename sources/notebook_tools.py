@@ -2,21 +2,36 @@
 notebook_tools.py — Outils appelables depuis notebook/features.ipynb
 ====================================================================
 
+################################################################################
+# ⚠️  A MODIFIER — CE MODULE CIBLE ENCORE L'ANCIEN LAYOUT.                       #
+#                                                                              #
+# Depuis la restructuration, la sortie a change :                             #
+#   runs/<gen>/<run>/{footage,degraded,*_labels.csv,poses_cam_export.json}    #
+#   -> scenarios/<batch>/<scenario>/{<name>.yaml,<name>.json,<name>.esp}      #
+#      + dataset/<sim>/<airport_runway>/<scenario>/{images,corrupted_images,  #
+#        metadata.csv}                                                        #
+# Les helpers ci-dessous (build_dataset, regroup_images, lard_box,            #
+# xplane_config, params_trace, video) doivent etre reecrits pour ce layout.   #
+# En l'etat ils s'importent mais donneront de mauvais resultats au runtime.   #
+################################################################################
+
+
 Regroupe les fonctions utilisees par notebook/features.ipynb (dataset, sanity checks,
-generation yolo_box/lard_box, params_trace.xml, xplane_config.json, video MP4)
+generation lard_box, params_trace.xml, xplane_config.json, video MP4)
 pour que le notebook se reduise a une suite d'appels.
 
 Usage depuis le notebook :
     from notebook_tools import (
         build_dataset, regroup_images,
-        build_yolo_box, show_sanity,
         build_lard_box, show_sanity_lard,
         build_xplane_config, build_params_trace,
         build_video,
     )
 """
 
-import _paths  # noqa: F401  (bootstrap sys.path)
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # sources/ sur sys.path (imports plats)
 
 import csv
 import json
@@ -30,9 +45,21 @@ import cv2
 import yaml
 
 from lard_bridge import annotate_gt, load_gt_corners, generate_frame_times, _lard_cwd
-from evaluation.yolo.predict import MODEL_PATH  # SUT YOLO (banc d'eval)
-from runs import find_runs, list_images, pick_image_source
-from runway import runway_from_run_name
+from scenario import find_scenarios, list_images, pick_image_source
+from runway_utils import runway_from_run_name
+
+
+def find_runs(run_name=None, all_runs=False, generation=None):
+    """Adaptateur retro-compat : mappe l'ancienne API vers find_scenarios().
+
+    NOTE layout : depuis la refonte, les helpers dataset/box/video de ce
+    module ciblent l'ANCIENNE arborescence runs/<gen>/<run>/ (footage/,
+    poses_cam_export.json, *_labels.csv). Avec le nouveau layout
+    (scenarios/<batch>/ + dataset/<sim>/<icao>/<scenario>/), ils doivent
+    etre adaptes (images/, corrupted_images/, metadata.csv, <name>.json).
+    Cet adaptateur garde le module importable et build_esp fonctionnel.
+    """
+    return find_scenarios(name=run_name, all_scenarios=all_runs, batch=generation)
 
 
 # ---------------------------------------------------------------------------
@@ -365,71 +392,6 @@ def regroup_images(mode="piste", src_dir=DATASET_DIR, dest_dir=REGROUP_DIR):
 
 
 # ---------------------------------------------------------------------------
-# YOLO box + sanity
-# ---------------------------------------------------------------------------
-
-def build_yolo_box(run_name: str | None = None,
-                   line_width: int = 2, conf: float = 0.25, imgsz: int = 512):
-    """Trace les bbox YOLO (trait fin) dans run_dir/yolo_box/. None = tous les runs.
-
-    Meme appel que evaluation/yolo/predict.py (model.predict + save=True), seul `line_width`
-    est ajoute (non expose par predict()).
-    """
-    from ultralytics import YOLO
-
-    targets = find_runs(run_name=run_name, all_runs=run_name is None)
-    model = YOLO(str(MODEL_PATH))
-    for run in targets:
-        src = pick_image_source(run)
-        if not list_images(src):
-            print(f"  [skip] {run.name} : pas d'images dans {src.name}/")
-            continue
-        out = run / "yolo_box"
-        if out.exists():
-            shutil.rmtree(out)
-        model.predict(source=str(src), conf=conf, imgsz=imgsz, save=True,
-                      line_width=line_width, project=str(run), name="yolo_box",
-                      exist_ok=True, verbose=False)
-        print(f"  {run.name} -> yolo_box/")
-
-
-def show_sanity(run_name: str | None = None,
-                line_width: int = 2, conf: float = 0.25, imgsz: int = 512):
-    """Affiche premiere / milieu / derniere image avec bbox YOLO via result.plot()."""
-    import matplotlib.pyplot as plt
-    from ultralytics import YOLO
-
-    targets = find_runs(run_name=run_name, all_runs=run_name is None)
-    if not targets:
-        print("[!] aucun run trouve")
-        return
-    run = targets[0]
-
-    src = pick_image_source(run)
-    images = list_images(src)
-    if not images:
-        print(f"[!] pas d'images dans {src}")
-        return
-
-    n = len(images)
-    picks = [(images[0], 0), (images[n // 2], n // 2), (images[-1], n - 1)]
-
-    model = YOLO(str(MODEL_PATH))
-
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    for ax, (img_path, idx) in zip(axes, picks):
-        result = model.predict(source=str(img_path), conf=conf, imgsz=imgsz,
-                               verbose=False)[0]
-        annotated = result.plot(line_width=line_width)  # numpy BGR avec bbox
-        ax.imshow(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
-        ax.set_title(f"{img_path.name} ({idx + 1}/{n})")
-        ax.axis("off")
-    fig.suptitle(f"{run.name} — sanity check YOLO (source: {src.name}/)")
-    plt.tight_layout()
-    plt.show()
-
-
-# ---------------------------------------------------------------------------
 # LARD box + sanity
 # ---------------------------------------------------------------------------
 
@@ -568,57 +530,24 @@ def build_params_trace(run_name: str | None = None):
 # ---------------------------------------------------------------------------
 
 def build_esp(run_name: str | None = None, fov_vertical: float = 30.0):
-    """Genere run_dir/<run>.esp (projet Google Earth Studio) depuis les poses.
+    """Genere <scenario>.esp (projet Google Earth Studio) depuis les poses.
 
-    Pont renderer-agnostique -> GES : relit poses_cam_export.json et reconstruit
-    le .esp via LARD GEODataset.create_scenario (charge data/template.json,
-    normalise chaque canal dans [0,1] via min/maxValueRange, empile les keyframes).
-    On ne reimplemente pas le format GES : on reutilise le code LARD.
+    Delegue a ges_export.build_esp_for_scenario (reutilise LARD GEODataset).
+    Opere sur les scenarios du nouveau layout (scenarios/<batch>/<scenario>/
+    contenant <scenario>.json). Le .esp est aussi genere par 'generate'
+    (best-effort) ; cette fonction sert a (re)generer a la demande.
 
-    Convention pitch : poses_cam_export.json stocke deja le pitch en convention
-    GES (90 deg = horizontal), donc transmis tel quel a create_scenario.
-
-    :param run_name: chemin compose '<gen>/<run>' ; None = tous les runs.
+    :param run_name: chemin compose '<batch>/<scenario>' ; None = tous.
     :param fov_vertical: FOV vertical en degres (GES historique LARD = 30).
     """
-    from src.geo.geo_dataset import GEODataset  # LARD (sys.path via _paths)
+    from ges_export import build_esp_for_scenario
 
-    targets = find_runs(run_name=run_name, all_runs=run_name is None)
-    for run in targets:
-        poses_file = run / "poses_cam_export.json"
-        if not poses_file.exists():
-            print(f"  [skip] {run.name} : pas de poses_cam_export.json")
-            continue
-
-        data = json.loads(poses_file.read_text())
-        poses = data.get("poses", [])
-        if not poses:
-            print(f"  [skip] {run.name} : poses vides")
-            continue
-
-        # poses -> flight_data (lon, lat, alt, yaw, pitch, roll) attendu par LARD.
-        flight_data = [
-            (p["lon"], p["lat"], p["alt_m"], p["heading"], p["pitch"], p["roll"])
-            for p in poses
-        ]
-        fps = int(data.get("fps", 25))
-        n_frames = len(flight_data)
-        times = generate_frame_times(n_frames, fps)
-
-        dataset = GEODataset(str(run), run.name)
-        with _lard_cwd():  # CWD = LARD_ROOT pour data/template.json
-            scenario, _ = dataset.create_scenario(
-                flight_data,
-                fov_vertical=fov_vertical,
-                width=1024, height=1024,
-                nb_frames=n_frames, fps=fps,
-                times=times,
-            )
-
-        out = run / f"{run.name}.esp"
-        with open(out, "w") as f:
-            json.dump(scenario, f, indent=2)
-        print(f"  {run.name} -> {out.name}  ({n_frames} frames @ {fps}fps, fov={fov_vertical} deg)")
+    for scen in find_scenarios(name=run_name, all_scenarios=run_name is None):
+        try:
+            out = build_esp_for_scenario(scen, fov_vertical=fov_vertical)
+            print(f"  {scen.name} -> {Path(out).name}")
+        except Exception as e:
+            print(f"  [skip] {scen.name} : {type(e).__name__} {e}")
 
 
 # ---------------------------------------------------------------------------

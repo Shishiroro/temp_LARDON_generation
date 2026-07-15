@@ -12,7 +12,7 @@ Pre-requis : XPPython3 doit deja etre installe dans
 <X-Plane 12>/Resources/plugins/ (voir README).
 
 Usage (depuis la racine du projet) :
-    py scripts/install_weather_plugin.py                       # lit xplane_dir de settings.xml
+    py scripts/install_weather_plugin.py                       # lit XPLANE_DIR (config)
     py scripts/install_weather_plugin.py --xplane-dir "D:/X-Plane 12"
 
 Apres la copie, recharger dans le simulateur :
@@ -22,25 +22,14 @@ Apres la copie, recharger dans le simulateur :
 import argparse
 import shutil
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_SRC = ROOT / "XPlanePlugin" / "PI_weather.py"
-SETTINGS = ROOT / "sources" / "settings.xml"
 
-
-def _xplane_dir_from_settings():
-    """Lit xplane_dir depuis sources/settings.xml (chaine vide si absent)."""
-    if not SETTINGS.exists():
-        return ""
-    try:
-        for p in ET.parse(SETTINGS).getroot():
-            if p.attrib.get("name") == "xplane_dir":
-                return p.attrib.get("value", "")
-    except ET.ParseError:
-        pass
-    return ""
+# config appli (XPLANE_DIR) resolue depuis sources/config.py
+sys.path.insert(0, str(ROOT / "sources"))
+from config import XPLANE_DIR
 
 
 def install(xplane_dir):
@@ -74,13 +63,13 @@ def main():
         description="Installe PI_weather.py dans X-Plane 12 (PythonPlugins/)")
     parser.add_argument(
         "--xplane-dir", type=str, default=None,
-        help="Repertoire X-Plane 12 (defaut: xplane_dir de sources/settings.xml)")
+        help="Repertoire X-Plane 12 (defaut: XPLANE_DIR via config.py)")
     args = parser.parse_args()
 
-    xplane_dir = args.xplane_dir or _xplane_dir_from_settings()
+    xplane_dir = args.xplane_dir or XPLANE_DIR
     if not xplane_dir:
-        sys.exit("[ERREUR] Aucun repertoire X-Plane : renseigner xplane_dir "
-                 "dans settings.xml ou passer --xplane-dir.")
+        sys.exit("[ERREUR] Aucun repertoire X-Plane : definir XPLANE_DIR "
+                 "(env ou paths.local.json) ou passer --xplane-dir.")
 
     install(xplane_dir)
 

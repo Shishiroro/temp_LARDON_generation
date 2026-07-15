@@ -16,12 +16,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional
 import cv2
-import sys
 
-from runs import list_images
-
-# Make the path relative, so we dont need _paths.py
-from .camera_sensor_errors.camera_sensor_errors import apply_errors
+from scenario import list_images
+from camera_sensor_errors.camera_sensor_errors import apply_errors
 
 
 # 26 types de fautes capteur hardware
@@ -125,11 +122,6 @@ def apply_faults_to_directory(input_dir, output_dir, faults, n_frames):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # camera_sensor_errors/ est cote usine (sous-dossier de export/)
-    cse_dir = str(Path(__file__).resolve().parent / "camera_sensor_errors")
-    if cse_dir not in sys.path:
-        sys.path.insert(0, cse_dir)
-
     extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
     images = sorted(f for f in input_dir.iterdir() if f.suffix.lower() in extensions)
 
@@ -159,36 +151,35 @@ def apply_faults_to_directory(input_dir, output_dir, faults, n_frames):
     return count
 
 
-def apply_faults(run_dir):
-    """Applique les fautes capteur a un run si fault_profile.json est present.
+def apply_faults(images_dir, output_dir, fault_json):
+    """Applique les fautes capteur : images_dir -> output_dir selon fault_json.
 
-    Lit run_dir/fault_profile.json, applique les fautes aux images de footage/
-    et ecrit dans degraded/. Skip si degraded/ existe deja avec des images.
+    Lit fault_json (fault_profile.json du scenario), applique les fautes aux
+    images de images_dir et ecrit dans output_dir (dataset .../corrupted_images/).
+    No-op si fault_json absent ; skip si output_dir contient deja des images.
 
-    :return: dossier d'images a utiliser pour YOLO (degraded/ si fautes appliquees,
-             footage/ sinon)
+    :return: output_dir si fautes appliquees, images_dir sinon
     """
-    run_dir = Path(run_dir)
-    fault_json = run_dir / "fault_profile.json"
-    footage_dir = run_dir / "footage"
-    degraded_dir = run_dir / "degraded"
+    images_dir = Path(images_dir)
+    output_dir = Path(output_dir)
+    fault_json = Path(fault_json)
 
     if not fault_json.exists():
-        return footage_dir
+        return images_dir
 
-    if list_images(degraded_dir):
-        print(f"  [FAULTS] degraded/ existe deja, skip application")
-        return degraded_dir
+    if list_images(output_dir):
+        print(f"  [FAULTS] corrupted_images/ existe deja, skip application")
+        return output_dir
 
-    print(f"\n  [FAULTS] Application des fautes capteur ({run_dir.name})...")
+    print(f"\n  [FAULTS] Application des fautes capteur ({images_dir.parent.name})...")
 
     faults, n_frames = load_fault_profile(fault_json)
     if not faults:
         print(f"  [FAULTS] Aucune faute dans le profil, skip")
-        return footage_dir
+        return images_dir
 
     fault_str = ", ".join(f"{f.fault_type}({f.severity:.2f})" for f in faults)
     print(f"  [FAULTS] Fautes : {fault_str}")
 
-    apply_faults_to_directory(footage_dir, degraded_dir, faults, n_frames)
-    return degraded_dir
+    apply_faults_to_directory(images_dir, output_dir, faults, n_frames)
+    return output_dir

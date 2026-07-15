@@ -1,0 +1,6 @@
+{
+  "_comment": "Copier ce fichier en 'paths.local.json' (non versionne) et renseigner les chemins de VOTRE machine. LARD et TAF peuvent etre n'importe ou : mettre leur chemin ABSOLU. Un chemin relatif est resolu par rapport a la racine du projet.",
+  "lard_dir": "C:/Users/Horyhs/Desktop/LARD",
+  "taf_dir": "C:/Users/Horyhs/Desktop/taf",
+  "xplane_dir": "C:/X-Plane 12"
+}

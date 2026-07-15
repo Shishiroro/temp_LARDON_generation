@@ -9,7 +9,7 @@ Comportement :
   - Lit le XML TAF (par defaut moyenne (min+max)/2 par parametre).
   - Pause la sim + vue externe (pas de cockpit) via setup_view().
   - Teleporte l'avion / camera 100m au-dessus de la pose initiale stockee
-    dans runs/<run>/poses_cam_export.json.
+    dans scenarios/<batch>/<scenario>/<scenario>.json.
   - L'altitude cible est calculee a partir du JSON, pas de la pose
     courante du sim => le script est idempotent (relancer ne rajoute pas
     +100m supplementaires).
@@ -19,7 +19,7 @@ Comportement :
 
 Usage :
   py injection_weather_test.py
-  py injection_weather_test.py --run generation_01/LFPO_24
+  py injection_weather_test.py --scenario <batch>/<scenario_name>
   py injection_weather_test.py --xplane-dir "C:/X-Plane 12" --alt-offset 200
 """
 
@@ -29,8 +29,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "sources" / "export"))
+sys.path.insert(0, str(ROOT / "sources"))
 
+from config import XPLANE_DIR  # noqa: E402
+from scenario import SCENARIOS_DIR, find_scenarios  # noqa: E402
 from xplane_bridge import XPlaneConnection, XPlaneConfig, load_poses_json  # noqa: E402
 from xplane_weather import (  # noqa: E402
     WeatherConfig, set_exchange_dir, check_plugin, inject_weather,
@@ -94,16 +96,17 @@ def resolve_template_path() -> Path:
 # Resolution run par defaut (le plus recent)
 # ---------------------------------------------------------------------------
 
-def find_latest_run(runs_dir: Path) -> Path:
-    """Trouve le run le plus recent (structure runs/<generation>/<ICAO_RWY>/).
+def _poses_json(scenario_dir: Path) -> Path:
+    """Fichier de poses d'un scenario : <scenario_dir>/<scenario_name>.json."""
+    return scenario_dir / f"{scenario_dir.name}.json"
 
-    Recherche recursive : poses_cam_export.json vit desormais sous
-    runs/<generation>/<run>/ (un dossier par batch, sous-dossier par scenario).
-    """
-    candidates = [p.parent for p in runs_dir.rglob("poses_cam_export.json")]
-    if not candidates:
-        raise FileNotFoundError(f"Aucun run avec poses_cam_export.json dans {runs_dir}")
-    return max(candidates, key=lambda d: (d / "poses_cam_export.json").stat().st_mtime)
+
+def find_latest_scenario() -> Path:
+    """Scenario le plus recent sous scenarios/<batch>/<scenario>/ (mtime des poses)."""
+    scens = [s for s in find_scenarios(all_scenarios=True) if _poses_json(s).exists()]
+    if not scens:
+        raise FileNotFoundError(f"Aucun scenario avec poses (.json) sous {SCENARIOS_DIR}")
+    return max(scens, key=lambda s: _poses_json(s).stat().st_mtime)
 
 
 # ---------------------------------------------------------------------------
@@ -115,14 +118,11 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _settings = {p.attrib["name"]: p.attrib["value"]
-                 for p in ET.parse(ROOT / "sources" / "settings.xml").getroot()}
-    default_xp = _settings["xplane_dir"]
-    parser.add_argument("--xplane-dir", type=str, default=default_xp,
-                        help=f"Repertoire X-Plane 12 (defaut: {default_xp})")
-    parser.add_argument("--run", type=str, default=None,
-                        help="Chemin compose <generation>/<run> (ex: generation_01/LFPO_24) "
-                             "ou le plus recent dans runs/ par defaut")
+    parser.add_argument("--xplane-dir", type=str, default=XPLANE_DIR,
+                        help=f"Repertoire X-Plane 12 (defaut: {XPLANE_DIR or '(non defini)'})")
+    parser.add_argument("--scenario", type=str, default=None,
+                        help="Chemin compose <batch>/<scenario_name> "
+                             "ou le plus recent dans scenarios/ par defaut")
     parser.add_argument("--alt-offset", type=float, default=100.0,
                         help="Offset altitude au-dessus de la pose initiale (m, defaut: 100)")
     args = parser.parse_args()
@@ -137,12 +137,18 @@ def main():
           f"rain_scale={weather_cfg.rain_scale:.1f}")
 
     # 2. Pose initiale (reference = JSON, donc idempotent)
-    runs_dir = ROOT / "runs"
-    run_dir = (runs_dir / args.run) if args.run else find_latest_run(runs_dir)
-    if not run_dir.exists():
-        print(f"[ERREUR] run introuvable : {run_dir}")
+    if args.scenario:
+        scenario_dir = SCENARIOS_DIR / args.scenario
+        if not scenario_dir.exists():
+            print(f"[ERREUR] scenario introuvable : {scenario_dir}")
+            return 1
+    else:
+        scenario_dir = find_latest_scenario()
+    poses_file = _poses_json(scenario_dir)
+    if not poses_file.exists():
+        print(f"[ERREUR] poses introuvables : {poses_file}")
         return 1
-    poses_data = load_poses_json(run_dir / "poses_cam_export.json")
+    poses_data = load_poses_json(poses_file)
     first = poses_data["poses"][0]
     target_lat = float(first["lat"])
     target_lon = float(first["lon"])
@@ -150,7 +156,7 @@ def main():
     target_heading = float(first["heading"])
     target_pitch = float(first["pitch"]) - 90.0  # stocke (90=level) -> X-Plane (0=level)
     target_roll = float(first["roll"])
-    print(f"[POSE] run          : {run_dir.relative_to(ROOT)}")
+    print(f"[POSE] scenario     : {scenario_dir.relative_to(ROOT)}")
     print(f"[POSE] cible        : lat={target_lat:.6f} lon={target_lon:.6f} "
           f"alt={target_alt:.1f}m  (origin {first['alt_m']:.1f}m + {args.alt_offset:.0f}m)")
 

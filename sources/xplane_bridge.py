@@ -43,6 +43,11 @@ import mss
 import mss.tools
 from PIL import Image
 
+from scenario import list_images
+from xplane_weather import (
+    load_weather_profile, inject_weather, set_exchange_dir, check_plugin,
+)
+
 import platform
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -723,9 +728,6 @@ def render_scenario(poses_path, output_dir, config=None, weather_profile_path=No
         weather_active = False
         weather_status = "no_weather"  # no_weather | ok | plugin_timeout | inject_failed
         if weather_profile_path and Path(weather_profile_path).exists():
-            from xplane_weather import (
-                load_weather_profile, inject_weather, set_exchange_dir, check_plugin,
-            )
             weather_cfg = load_weather_profile(weather_profile_path)
             if weather_cfg:
                 if config.xplane_dir:
@@ -805,49 +807,43 @@ def render_scenario(poses_path, output_dir, config=None, weather_profile_path=No
     return output_dir
 
 
-def render_xplane_run(run_dir, xplane_dir):
-    """Rend les images d'un run via X-Plane 12.
+def render_xplane_scenario(poses_json, out_images_dir, xplane_dir, weather_json=None):
+    """Rend les images d'un scenario via X-Plane 12 dans out_images_dir.
 
-    Lit run_dir/poses_cam_export.json (+ weather_profile.json si present),
-    sauve les images dans run_dir/footage/. Skip si footage/ contient deja
-    des images.
+    Lit poses_json (+ weather_json si fourni), sauve les images dans
+    out_images_dir. Skip si out_images_dir contient deja des images.
 
-    Renomme depuis `render_run` pour eviter la collision avec
-    Export.render_run (qui orchestre la Phase 2 entiere : rendu + fautes + GT).
-
-    :param run_dir: dossier du run
+    :param poses_json: chemin du <scenario>.json (poses camera)
+    :param out_images_dir: dossier de sortie des images (dataset .../images/)
     :param xplane_dir: chemin du repertoire X-Plane 12
+    :param weather_json: chemin weather_profile.json (optionnel)
     :return: True si les images ont ete rendues (ou existaient deja), False sinon
     """
-    run_dir = Path(run_dir)
-    poses_file = run_dir / "poses_cam_export.json"
-    footage_dir = run_dir / "footage"
+    poses_json = Path(poses_json)
+    out_images_dir = Path(out_images_dir)
 
-    if not poses_file.exists():
-        print(f"  [XPLANE] Pas de poses_cam_export.json pour {run_dir.name}")
+    if not poses_json.exists():
+        print(f"  [XPLANE] Pas de poses JSON : {poses_json}")
         return False
 
-    # sources/ est ajoute en sys.path par run_pipeline.py et Export.py
-    from runs import list_images
-    imgs = list_images(footage_dir)
+    imgs = list_images(out_images_dir)
     if imgs:
-        print(f"  [XPLANE] footage/ existe deja ({len(imgs)} images), skip rendu")
+        print(f"  [XPLANE] images/ existe deja ({len(imgs)} images), skip rendu")
         return True
 
-    print(f"\n  [XPLANE] Rendu de {run_dir.name}...")
+    print(f"\n  [XPLANE] Rendu de {poses_json.stem}...")
 
     # Charge le poses JSON pour recuperer screenshot_duration (delai apres
-    # teleport camera). Si absent (anciens runs), conserve le defaut XPlaneConfig.
-    with open(poses_file) as f:
+    # teleport camera). Si absent, conserve le defaut XPlaneConfig.
+    with open(poses_json) as f:
         poses_data = json.load(f)
     pose_settle = (poses_data.get("trajectory") or {}).get("screenshot_duration")
 
     config = XPlaneConfig(xplane_dir=xplane_dir)
     if pose_settle is not None:
         config.settle_time = float(pose_settle)
-    weather_file = run_dir / "weather_profile.json"
-    weather_path = str(weather_file) if weather_file.exists() else None
+    weather_path = str(weather_json) if weather_json and Path(weather_json).exists() else None
 
-    render_scenario(str(poses_file), str(footage_dir), config,
+    render_scenario(str(poses_json), str(out_images_dir), config,
                     weather_profile_path=weather_path)
     return True
