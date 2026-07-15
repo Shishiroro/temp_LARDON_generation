@@ -27,13 +27,14 @@ from trajectory_builder import (
     OUParams,
     build_trajectory
 )
-from lard_bridge import get_runway_geometry, export_scenario
-from xplane_bridge import save_poses_json
+from lard_bridge import get_runway_geometry, export_scenario, generate_gt_csv
+from xplane_bridge import save_poses_json, render_xplane_scenario
 from sensor_faults import (
     FaultConfig,
     KNOWN_FAULT_TYPES,
     validate_faults,
     save_fault_profile,
+    apply_faults,
 )
 from xplane_weather import (
     WeatherConfig,
@@ -41,13 +42,8 @@ from xplane_weather import (
     has_weather,
     save_weather_profile,
 )
-
-## Imports for step two (Phase 2 : rendu + fautes + GT)
 from scenario import list_images, dataset_scenario_dir, PROJECT_ROOT
-from lard_bridge import generate_gt_csv
 from metadata import build_metadata_csv
-from xplane_bridge import render_xplane_scenario
-from sensor_faults import apply_faults
 
  
 def _read_param(node, name):
@@ -200,8 +196,8 @@ def export(root_node, path):
     )
 
     # Nom du template XML actif (lu depuis settings.xml, CWD = sources/).
-    # Sauvegarde dans poses_cam_export.json pour que le notebook puisse
-    # remplir la colonne `weather` du metadata.csv.
+    # Sauvegarde dans poses_cam_export.json : sert a remplir la colonne
+    # `weather` du metadata.csv (cote pipeline, metadata.py).
     template_file_name = ""
     try:
         settings_tree = ET.parse("settings.xml")

@@ -212,7 +212,7 @@ def generate_runs(nb_scenarios=None, name=None, clean=False, runway=None):
 
     Wrapper haut-niveau de run() : nettoie le dossier temporaire output/,
     lance la generation TAF, puis reorganise les .yaml + poses vers
-    scenarios/<batch>/<scenario_name>/ (+ .esp best-effort).
+    scenarios/<batch>/<scenario_name>/ (+ .esp GES).
 
     :param name: nom optionnel du batch (genere `<name>__<timestamp>/`
                  au lieu de `default__<timestamp>/`)

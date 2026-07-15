@@ -9,8 +9,8 @@ NB : le rendu GES lui-meme est EXTERNE au projet. Ici on ne produit que le
 fichier .esp (le projet a ouvrir dans Google Earth Studio).
 
 Ce module importe LARD a l'import (via lard_bridge) : l'appeler quand LARD
-n'est pas installe leve une exception — les appelants (ex: generate) traitent
-la generation du .esp en best-effort.
+n'est pas installe leve une exception. Au 'generate', la generation du .esp
+n'est PAS protegee (pas de try/except) : un echec interrompt la generation.
 """
 
 import json

@@ -27,7 +27,7 @@ Conversion appliquee dans _convert_pose : xplane_pitch = pitch_stocke - 90.
 Usage :
     from xplane_bridge import render_scenario, XPlaneConfig
     config = XPlaneConfig(xplane_dir="C:/X-Plane 12")
-    render_scenario("runs/LFPO_24/poses_cam_export.json", "runs/LFPO_24/footage", config)
+    render_scenario("scenario.json", "images/", config)
 """
 
 import struct
@@ -673,11 +673,11 @@ def load_poses_json(path):
 def render_scenario(poses_path, output_dir, config=None, weather_profile_path=None):
     """Rend un scenario complet via X-Plane.
 
-    Lit le fichier poses_cam_export.json, injecte chaque pose dans X-Plane,
+    Lit le fichier de poses JSON, injecte chaque pose dans X-Plane,
     capture la fenetre via mss, et sauve les images en JPEG.
 
-    :param poses_path: chemin vers le fichier poses_cam_export.json
-    :param output_dir: dossier de sortie pour les images (footage/)
+    :param poses_path: chemin vers le fichier de poses JSON
+    :param output_dir: dossier de sortie pour les images (dataset .../images/)
     :param config: XPlaneConfig (optionnel)
     :param weather_profile_path: chemin vers weather_profile.json (optionnel)
     :return: Path du dossier de sortie

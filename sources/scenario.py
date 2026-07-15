@@ -6,7 +6,7 @@ Deux arbres de sortie distincts :
   scenarios/<batch>/<scenario_name>/            (produit par 'generate')
       <scenario_name>.yaml                      scenario LARD (TAF)
       <scenario_name>.json                      poses camera
-      <scenario_name>.esp                       projet GES (best-effort)
+      <scenario_name>.esp                       projet GES
       [fault_profile.json]                      si fautes actives
       [weather_profile.json]                    si meteo active
 
