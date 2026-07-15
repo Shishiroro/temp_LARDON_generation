@@ -100,11 +100,6 @@ def dataset_scenario_dir(simulator, scenario_name):
     return DATASET_DIR / simulator / icao / scenario_name
 
 
-def has_images(dataset_dir):
-    """Le dataset d'un scenario a-t-il des images dans images/ ?"""
-    return bool(list_images(Path(dataset_dir) / "images"))
-
-
 def pick_image_source(dataset_dir):
     """corrupted_images/ si non vide, sinon images/."""
     d = Path(dataset_dir)

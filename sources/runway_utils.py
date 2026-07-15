@@ -1,5 +1,5 @@
 """
-runway_utils.py — utilitaires sur les noms de pistes (reciprocal, extraction depuis run_name).
+runway_utils.py — utilitaires sur les noms de pistes (reciprocal).
 """
 
 import re
@@ -15,12 +15,3 @@ def reciprocal_runway(rwy):
     recip_num = (num + 18) % 36 or 36
     recip_suffix = {"L": "R", "R": "L", "C": "C", "": ""}.get(suffix, suffix)
     return f"{recip_num:02d}{recip_suffix}"
-
-
-def runway_from_run_name(run_name):
-    """Extrait le runway du nom de run (ex: LFPG_09L_002 -> 09L, LFPO_24 -> 24).
-
-    Retourne None si le nom n'est pas au format ICAO_RWY[_NNN].
-    """
-    m = re.match(r"^[A-Z]{4}_(.+?)(?:_\d{3})?$", str(run_name))
-    return m.group(1) if m else None

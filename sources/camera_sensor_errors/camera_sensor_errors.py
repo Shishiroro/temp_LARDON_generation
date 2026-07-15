@@ -1,11 +1,11 @@
 """
 camera_sensor_errors.py — Simulation de fautes capteur camera embarquee avion.
 
-Applique des degradations realistes a des images X-Plane avant inference YOLOv8,
-pour evaluer la robustesse du modele.
+Applique des dégradations réalistes à des images X-Plane pour simuler des
+fautes capteur (évaluation de robustesse en aval, projet séparé).
 
-Importe par sources/export/sensor_faults.py — pas de CLI standalone, le
-pipeline (run_pipeline.py) pilote tout via les fault_profile.json TAF.
+Importé par sources/sensor_faults.py — pas de CLI standalone, le pipeline
+(main.py) pilote tout via les fault_profile.json TAF.
 
 Usage:
     from camera_sensor_errors import apply_errors, ERROR_REGISTRY

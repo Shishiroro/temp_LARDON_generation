@@ -1,24 +1,22 @@
 """
-notebook_tools.py — Outils appelables depuis notebook/features.ipynb
-====================================================================
+notebook_tools.py — Outils appelables depuis notebooks/features.ipynb
+=====================================================================
+Helpers de visualisation / dataset au-dessus du NOUVEAU layout :
 
-################################################################################
-# ⚠️  A MODIFIER — CE MODULE CIBLE ENCORE L'ANCIEN LAYOUT.                       #
-#                                                                              #
-# Depuis la restructuration, la sortie a change :                             #
-#   runs/<gen>/<run>/{footage,degraded,*_labels.csv,poses_cam_export.json}    #
-#   -> scenarios/<batch>/<scenario>/{<name>.yaml,<name>.json,<name>.esp}      #
-#      + dataset/<sim>/<airport_runway>/<scenario>/{images,corrupted_images,  #
-#        metadata.csv}                                                        #
-# Les helpers ci-dessous (build_dataset, regroup_images, lard_box,            #
-# xplane_config, params_trace, video) doivent etre reecrits pour ce layout.   #
-# En l'etat ils s'importent mais donneront de mauvais resultats au runtime.   #
-################################################################################
+  scenarios/<batch>/<scenario>/            (generate)
+      <scenario>.yaml / <scenario>.json    scenario LARD + poses camera
+      [fault_profile.json / weather_profile.json]
 
+  dataset/<simulator>/<airport_runway>/<scenario>/   (export)
+      images/ , corrupted_images/          rendu + fautes capteur
+      metadata.csv                         verite terrain LARD (1 ligne / image)
+      labels_lard.csv                      GT LARD brute (toutes pistes visibles)
 
-Regroupe les fonctions utilisees par notebook/features.ipynb (dataset, sanity checks,
-generation lard_box, params_trace.xml, xplane_config.json, video MP4)
-pour que le notebook se reduise a une suite d'appels.
+Reutilise au maximum le code de l'usine (pas de duplication) :
+  - scenario.py  : resolution des scenarios/datasets, listing images
+  - metadata.py  : schema (META_COLS) + helpers (temps, meteo, GT)
+  - la GT pour la visualisation est lue depuis metadata.csv (deja filtre par
+    piste + une ligne par image), pas depuis labels_lard.csv brut.
 
 Usage depuis le notebook :
     from notebook_tools import (
@@ -44,432 +42,219 @@ from xml.etree import ElementTree as ET
 import cv2
 import yaml
 
-from lard_bridge import annotate_gt, load_gt_corners, generate_frame_times, _lard_cwd
-from scenario import find_scenarios, list_images, pick_image_source
-from runway_utils import runway_from_run_name
+# --- Reutilisation du code usine (source unique de verite) ---
+from scenario import (
+    PROJECT_ROOT, DATASET_DIR,
+    find_scenarios, list_images, pick_image_source,
+    dataset_scenario_dir, airport_runway_from_scenario,
+)
+from metadata import META_COLS  # schema partage (pas de copie locale)
 
+# Sorties on-demand du notebook (hors pipeline)
+DATASET_BUILD_DIR = PROJECT_ROOT / "dataset_build"      # consolidation par piste
+REGROUP_DIR = PROJECT_ROOT / "dataset_regroup"          # images aplaties (train)
+
+PILOT_EYE_DEFAULT = {"x": -0.25, "y": 0.40, "z": 0.26}  # defaults Cessna 172
+
+
+# ===========================================================================
+# Resolution scenario <-> dataset
+# ===========================================================================
 
 def find_runs(run_name=None, all_runs=False, generation=None):
-    """Adaptateur retro-compat : mappe l'ancienne API vers find_scenarios().
-
-    NOTE layout : depuis la refonte, les helpers dataset/box/video de ce
-    module ciblent l'ANCIENNE arborescence runs/<gen>/<run>/ (footage/,
-    poses_cam_export.json, *_labels.csv). Avec le nouveau layout
-    (scenarios/<batch>/ + dataset/<sim>/<icao>/<scenario>/), ils doivent
-    etre adaptes (images/, corrupted_images/, metadata.csv, <name>.json).
-    Cet adaptateur garde le module importable et build_esp fonctionnel.
-    """
+    """Adaptateur : mappe l'ancienne API (run_name/all_runs/generation) vers
+    find_scenarios(). Retourne les dossiers scenarios/<batch>/<scenario>/."""
     return find_scenarios(name=run_name, all_scenarios=all_runs, batch=generation)
 
 
-# ---------------------------------------------------------------------------
-# Constantes
-# ---------------------------------------------------------------------------
-
-ROOT = Path(__file__).resolve().parent.parent
-RUNS_DIR = ROOT / "runs"
-DATASET_DIR = RUNS_DIR / "dataset"
-REGROUP_DIR = RUNS_DIR / "dataset_regroup"
-
-# Colonnes du metadata.csv — alignees sur le CSV LARD natif.
-# Conventions (toutes valeurs LARD copiees telles quelles, sans normalisation) :
-#   - yaw, pitch, roll      : degres (pitch = 90 + pitch_reel, LARD natif)
-#   - slant_distance, along_track_distance : milles nautiques (NM)
-#   - height_above_runway   : pieds (ft)
-#   - type                  : constant "xplane"
-#   - scenario              : {ICAO}_{RWY}_{NNN:03d} (numerote par piste sur le batch)
-#   - time                  : "DD/MM/YYYY HH:MM" (date du run + heure simulee X-Plane)
-#   - time_fps              : HH:MM:SS (heure systeme du run, utilisee pour le fps)
-#   - weather               : nom du template XML utilise (ex: "rain_heavy")
-META_COLS = [
-    "height", "width", "type",
-    "scenario", "airport", "runway",
-    "time", "time_fps", "weather",
-    "yaw", "pitch", "roll",
-    "slant_distance", "along_track_distance", "height_above_runway",
-    "lateral_path_angle", "vertical_path_angle",
-    "x_TR", "y_TR", "x_TL", "y_TL", "x_BL", "y_BL", "x_BR", "y_BR",
-    "image",
-]
-
-# Colonnes copiees telles quelles depuis le CSV LARD vers le metadata.
-LARD_PASSTHROUGH = [
-    "height", "width",
-    "airport", "runway",
-    "yaw", "pitch", "roll",
-    "slant_distance", "along_track_distance", "height_above_runway",
-    "lateral_path_angle", "vertical_path_angle",
-    "x_TR", "y_TR", "x_TL", "y_TL", "x_BL", "y_BL", "x_BR", "y_BR",
-]
-
-# Defaults Cessna 172 (vus dans les anciens xplane_config.json)
-PILOT_EYE_DEFAULT = {"x": -0.25, "y": 0.40, "z": 0.26}
+def _dataset_dir(scenario_dir, simulator="xplane"):
+    """dataset/<simulator>/<icao>/<scenario>/ correspondant a un scenario_dir."""
+    return dataset_scenario_dir(simulator, Path(scenario_dir).name)
 
 
-# ---------------------------------------------------------------------------
-# Helpers prives
-# ---------------------------------------------------------------------------
+def _iter_run_datasets(run_name=None, all_runs=None, simulator="xplane"):
+    """Itere (scenario_dir, dataset_dir) pour les scenarios cibles rendus.
 
-def _load_lard_rows(run, target_rwy):
-    """Charge le CSV LARD du run, filtre sur la piste cible, indexe par nom d'image."""
-    csvs = list(run.glob("*_labels.csv"))
-    if not csvs:
-        return {}
-    rows = {}
-    with open(csvs[0], newline="") as f:
-        for row in csv.DictReader(f, delimiter=";"):
-            if row.get("runway") != target_rwy:
-                continue
-            rows[Path(row["image"]).name] = row
-    return rows
-
-
-def _read_template_name(run):
-    """Lit trajectory.template_file_name depuis poses_cam_export.json."""
-    pp = run / "poses_cam_export.json"
-    if not pp.exists():
-        return ""
-    try:
-        data = json.loads(pp.read_text())
-    except (json.JSONDecodeError, OSError):
-        return ""
-    return str((data.get("trajectory") or {}).get("template_file_name", ""))
-
-
-def _load_time_of_day(run):
-    """Lit weather_profile.json et retourne time_of_day_h, '' si absent."""
-    wp = run / "weather_profile.json"
-    if not wp.exists():
-        return ""
-    try:
-        data = json.loads(wp.read_text())
-    except (json.JSONDecodeError, OSError):
-        return ""
-    return data.get("weather", {}).get("time_of_day_h", "")
-
-
-def _weather_label(template_file_name):
-    """'rain/rain_heavy.xml' -> 'rain_heavy', '' -> ''."""
-    return Path(template_file_name).stem if template_file_name else ""
-
-
-def _format_time(time_lard, time_of_day_h):
-    """Combine date LARD + heure X-Plane -> 'DD/MM/YYYY HH:MM'.
-
-    time_lard     : 'YYYY-MM-DD HH:MM:SS' (ecrit par lard_bridge).
-    time_of_day_h : float (heures decimales, ex 12.5 -> 12:30).
+    all_runs par defaut = (run_name is None). Ne garde que les scenarios dont
+    le dataset possede un dossier images/ (donc reellement rendus).
     """
-    if not time_lard:
-        return ""
-    try:
-        y, m, d = time_lard.split(" ")[0].split("-")
-        date_fmt = f"{d}/{m}/{y}"
-    except (ValueError, IndexError):
-        return ""
-    if time_of_day_h in ("", None):
-        return date_fmt
-    try:
-        h_float = float(time_of_day_h)
-    except (TypeError, ValueError):
-        return date_fmt
-    hh = int(h_float) % 24
-    mm = int(round((h_float - int(h_float)) * 60)) % 60
-    return f"{date_fmt} {hh:02d}:{mm:02d}"
+    if all_runs is None:
+        all_runs = run_name is None
+    for scen in find_runs(run_name=run_name, all_runs=all_runs):
+        ds = _dataset_dir(scen, simulator)
+        if (ds / "images").exists():
+            yield scen, ds
 
 
-def _format_time_fps(time_lard):
-    """'YYYY-MM-DD HH:MM:SS' -> 'HH:MM:SS'."""
-    if not time_lard or " " not in time_lard:
-        return ""
-    return time_lard.split(" ", 1)[1]
+def _corners_from_metadata(dataset_dir):
+    """{nom_image: [(x,y) x4]} depuis metadata.csv (piste cible, 1 ligne/image).
 
-
-def _runway_key(run_name):
-    """Cle de regroupement : ICAO_RWY sans le suffixe _002/_003/..."""
-    airport = run_name.split("_")[0]
-    return f"{airport}_{runway_from_run_name(run_name)}"
-
-
-def _write_csv(path, rows):
-    with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=META_COLS)
-        w.writeheader()
-        w.writerows(rows)
-
-
-def _xml_value(parent, tag, value):
-    el = ET.SubElement(parent, tag)
-    el.text = f"{value}"
-
-
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-
-def build_dataset(out_dir=DATASET_DIR):
-    """Construit dataset/ avec arborescence par piste / scenario.
-
-    Sortie :
-        dataset/
-            metadata.csv                          # toutes pistes / scenarios
-            <RWY>/
-                metadata.csv                      # tous scenarios de la piste
-                <RWY>_<NNN>/
-                    images/NNNNNN.jpg ...
-                    metadata.csv                  # ce scenario uniquement
+    Ignore les lignes sans coins (frames ou la piste n'est pas dans le cone).
     """
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
-
-    # Regroupe les runs par piste (KPDX_10L, KPDX_10L_002 -> meme groupe).
-    by_runway = defaultdict(list)
-    for run in find_runs(all_runs=True):
-        by_runway[_runway_key(run.name)].append(run)
-
-    summary = {}
-    all_rows = []
-    for rwy_key, runs in by_runway.items():
-        runs.sort(key=lambda r: r.name)
-        rwy_dir = out_dir / rwy_key
-        rwy_dir.mkdir(parents=True, exist_ok=True)
-        rwy_rows = []
-
-        for idx, run in enumerate(runs, start=1):
-            src = pick_image_source(run)
-            kind = src.name
-            images = list_images(src)
-            if not images:
-                summary[run.name] = (kind, 0, "absent")
-                continue
-
-            target_rwy = runway_from_run_name(run.name)
-            lard_rows = _load_lard_rows(run, target_rwy)
-            time_of_day = _load_time_of_day(run)
-            weather_label = _weather_label(_read_template_name(run))
-            scen_id = f"{rwy_key}_{idx:03d}"
-
-            scen_dir = rwy_dir / scen_id
-            img_dir = scen_dir / "images"
-            img_dir.mkdir(parents=True, exist_ok=True)
-
-            scen_rows = []
-            for i, img in enumerate(images):
-                new_name = f"{i:06d}{img.suffix.lower()}"
-                shutil.copy2(img, img_dir / new_name)
-
-                base = {c: "" for c in META_COLS}
-                lard = lard_rows.get(img.name, {})
-                for k in LARD_PASSTHROUGH:
-                    if k in lard:
-                        base[k] = lard[k]
-                base["type"] = "xplane"
-                base["scenario"] = scen_id
-                base["airport"] = base["airport"] or run.name.split("_")[0]
-                base["runway"] = base["runway"] or target_rwy
-                base["time"] = _format_time(lard.get("time", ""), time_of_day)
-                base["time_fps"] = _format_time_fps(lard.get("time", ""))
-                base["weather"] = weather_label
-
-                # 3 vues du chemin image, profondeur croissante.
-                scen_rows.append({**base, "image": f"images/{new_name}"})
-                rwy_rows.append({**base, "image": f"{scen_id}/images/{new_name}"})
-                all_rows.append({**base, "image": f"{rwy_key}/{scen_id}/images/{new_name}"})
-
-            _write_csv(scen_dir / "metadata.csv", scen_rows)
-            summary[run.name] = (kind, len(scen_rows), f"ok -> {rwy_key}/{scen_id}")
-
-        _write_csv(rwy_dir / "metadata.csv", rwy_rows)
-
-    _write_csv(out_dir / "metadata.csv", all_rows)
-
-    total = sum(n for _, n, _ in summary.values())
-    print(f"Dataset : {out_dir}")
-    for name, (kind, n, status) in summary.items():
-        print(f"  {name:<25} <- {kind:<8} ({n:>4} imgs) [{status}]")
-    print(f"Total : {total} images, {len(by_runway)} piste(s)")
-    print(f"Metadata racine : {out_dir / 'metadata.csv'} ({len(all_rows)} lignes)")
-    return summary
+    meta = Path(dataset_dir) / "metadata.csv"
+    out = {}
+    if not meta.exists():
+        return out
+    with open(meta, newline="") as f:
+        for r in csv.DictReader(f):
+            try:
+                out[Path(r["image"]).name] = [
+                    (float(r["x_TR"]), float(r["y_TR"])),
+                    (float(r["x_TL"]), float(r["y_TL"])),
+                    (float(r["x_BL"]), float(r["y_BL"])),
+                    (float(r["x_BR"]), float(r["y_BR"])),
+                ]
+            except (KeyError, ValueError):
+                continue  # ligne sans GT
+    return out
 
 
-def regroup_images(mode="piste", src_dir=DATASET_DIR, dest_dir=REGROUP_DIR):
-    """Regroupe et renumerote les images de dataset/, avec metadata.csv associe.
-
-    Deux modes :
-      mode="piste" (defaut) : un dossier par piste, renumerotation par piste.
-          dataset_regroup/<RWY>/img/000000.jpg ...
-          dataset_regroup/<RWY>/metadata.csv      (scenarios de cette piste)
-      mode="all"            : tout dans un seul dossier, renumerotation globale.
-          dataset_regroup/datasetr/img/000000.jpg ...
-          dataset_regroup/datasetr/metadata.csv   (toutes pistes confondues)
-
-    Chaque metadata.csv recopie les lignes du dataset (colonnes META_COLS) en
-    remplacant 'image' par le nouveau nom aplati. Les deux modes coexistent
-    (chacun nettoie uniquement son propre sous-dossier de dataset_regroup/).
-    """
-    if mode not in ("piste", "all"):
-        raise ValueError(f"mode invalide : {mode!r} (attendu 'piste' ou 'all')")
-    if not src_dir.exists():
-        print(f"Dataset introuvable : {src_dir}")
-        print("Lance d'abord build_dataset() (cellule precedente).")
-        return
-
-    # Indexe le metadata racine du dataset : 'image' (chemin relatif) -> ligne.
-    meta_by_relpath = {}
-    root_meta = src_dir / "metadata.csv"
-    if root_meta.exists():
-        with open(root_meta, newline="") as f:
-            for row in csv.DictReader(f):
-                meta_by_relpath[row["image"]] = row
-
-    exts = {".jpg", ".jpeg", ".png"}
-
-    def _meta_row(img, new_image):
-        """Recopie la ligne metadata du dataset, 'image' -> nouveau nom aplati."""
-        relpath = img.relative_to(src_dir).as_posix()
-        base = {c: "" for c in META_COLS}
-        base.update({k: v for k, v in meta_by_relpath.get(relpath, {}).items()
-                     if k in META_COLS})
-        base["image"] = new_image
-        return base
-
-    if mode == "piste":
-        # Regroupe par piste (img = .../<RWY>/<scenario>/images/<NNNNNN>.jpg).
-        by_runway = defaultdict(list)
-        for img in sorted(src_dir.rglob("images/*")):
-            if img.is_file() and img.suffix.lower() in exts:
-                by_runway[img.parent.parent.parent.name].append(img)
-        if not by_runway:
-            print(f"Aucune image trouvee dans {src_dir}")
-            return
-
-        print(f"Regroupement par piste : {dest_dir}")
-        total = 0
-        for rwy, imgs in sorted(by_runway.items()):
-            rwy_dir = dest_dir / rwy
-            img_dir = rwy_dir / "img"
-            if rwy_dir.exists():
-                shutil.rmtree(rwy_dir)
-            img_dir.mkdir(parents=True)
-
-            rows = []
-            for idx, img in enumerate(imgs):
-                new_name = f"{idx:06d}{img.suffix.lower()}"
-                shutil.copy2(img, img_dir / new_name)
-                rows.append(_meta_row(img, f"img/{new_name}"))
-            _write_csv(rwy_dir / "metadata.csv", rows)
-            print(f"  {rwy:<25} {len(imgs):>4} imgs -> {rwy}/img/")
-            total += len(imgs)
-        print(f"Total : {total} images, {len(by_runway)} piste(s)")
-    else:
-        # Tout dans dataset_regroup/datasetr/img/ (renumerotation globale).
-        flat_dir = dest_dir / "datasetr"
-        img_dir = flat_dir / "img"
-        if flat_dir.exists():
-            shutil.rmtree(flat_dir)
-        img_dir.mkdir(parents=True)
-
-        by_runway = defaultdict(int)
-        rows = []
-        idx = 0
-        for img in sorted(src_dir.rglob("images/*")):
-            if not img.is_file() or img.suffix.lower() not in exts:
-                continue
-            new_name = f"{idx:06d}{img.suffix.lower()}"
-            shutil.copy2(img, img_dir / new_name)
-            rows.append(_meta_row(img, f"img/{new_name}"))
-            by_runway[img.parent.parent.parent.name] += 1
-            idx += 1
-        if idx == 0:
-            print(f"Aucune image trouvee dans {src_dir}")
-            return
-
-        _write_csv(flat_dir / "metadata.csv", rows)
-        print(f"Regroupement global : {flat_dir}")
-        for rwy, n in sorted(by_runway.items()):
-            print(f"  {rwy:<25} {n:>4} imgs")
-        print(f"Total : {idx} images, {len(by_runway)} piste(s)")
-
-
-# ---------------------------------------------------------------------------
-# LARD box + sanity
-# ---------------------------------------------------------------------------
-
-def build_lard_box(run_name: str | None = None):
-    """Genere runs/<run>/lard_box/ (bbox GT LARD dessinees) via annotate_gt()."""
-    for run in find_runs(run_name=run_name, all_runs=run_name is None):
-        src = pick_image_source(run)
-        if not list_images(src):
-            print(f"  [skip] {run.name} : pas d'images dans {src.name}/")
+def _read_fps(scenario_dir, default=12):
+    """fps depuis <scenario>.json (poses), defaut si absent."""
+    for pj in Path(scenario_dir).glob("*.json"):
+        if pj.name in ("fault_profile.json", "weather_profile.json"):
             continue
-        out = run / "lard_box"
+        try:
+            return int(json.loads(pj.read_text()).get("fps", default))
+        except (json.JSONDecodeError, OSError, ValueError):
+            return default
+    return default
+
+
+def _poses_json(scenario_dir):
+    """<scenario>.json (poses), hors fault_/weather_profile.json."""
+    for p in Path(scenario_dir).glob("*.json"):
+        if p.name not in ("fault_profile.json", "weather_profile.json"):
+            return p
+    return None
+
+
+# ===========================================================================
+# LARD box + sanity check (GT depuis metadata.csv)
+# ===========================================================================
+
+def _draw_corners(img, corners, color=(255, 255, 0), width=2):
+    """Dessine le quad GT (TR-TL-BL-BR) sur une image BGR OpenCV (cyan par defaut).
+
+    color est en BGR (OpenCV) : (255, 255, 0) = cyan, coherent avec show_sanity_lard.
+    """
+    import numpy as np
+    pts = np.array([(int(x), int(y)) for x, y in corners], dtype=np.int32)
+    cv2.polylines(img, [pts], isClosed=True, color=color, thickness=width)
+
+
+def build_lard_box(run_name=None, source=None, line_width=2):
+    """Genere dataset/.../<scenario>/lard_box/ (images + bbox GT LARD dessinees).
+
+    :param source: 'images' ou 'corrupted_images' (defaut: corrupted si dispo).
+    """
+    for scen, ds in _iter_run_datasets(run_name=run_name):
+        src = (ds / source) if source else pick_image_source(ds)
+        images = list_images(src)
+        if not images:
+            print(f"  [skip] {scen.name} : pas d'images dans {src.name}/")
+            continue
+        corners = _corners_from_metadata(ds)
+        out = ds / "lard_box"
         if out.exists():
             shutil.rmtree(out)
-        annotate_gt(run, out_dir=out, prefix="")
-        print(f"  {run.name} -> lard_box/")
+        out.mkdir(parents=True)
+        drawn = 0
+        for img_path in images:
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+            box = corners.get(img_path.name)
+            if box:
+                _draw_corners(img, box, width=line_width)
+                drawn += 1
+            cv2.imwrite(str(out / img_path.name), img)
+        print(f"  {scen.name} -> lard_box/ ({drawn}/{len(images)} avec GT, source: {src.name}/)")
 
 
-def show_sanity_lard(run_name: str | None = None, line_width: int = 2):
-    """Affiche premiere / milieu / derniere image avec bbox GT LARD (piste cible uniquement)."""
+def show_sanity_lard(run_name=None, line_width=2, source=None):
+    """Affiche 1ere / milieu / derniere image d'un scenario avec bbox GT LARD."""
     import matplotlib.pyplot as plt
-    from PIL import Image
 
-    targets = find_runs(run_name=run_name, all_runs=run_name is None)
-    if not targets:
-        print("[!] aucun run trouve")
+    runs = list(_iter_run_datasets(run_name=run_name))
+    if not runs:
+        print("[!] aucun scenario rendu trouve")
         return
-    run = targets[0]
+    scen, ds = runs[0]
 
-    src = pick_image_source(run)
+    src = (ds / source) if source else pick_image_source(ds)
     images = list_images(src)
     if not images:
         print(f"[!] pas d'images dans {src}")
         return
 
-    target_rwy = runway_from_run_name(run.name)
-    csvs = list(run.glob("*_labels.csv"))
-    if not csvs:
-        print(f"[!] pas de *_labels.csv dans {run}")
-        return
-    gt = load_gt_corners(csvs[0], runway=target_rwy)
-
+    corners = _corners_from_metadata(ds)
     n = len(images)
     picks = [(images[0], 0), (images[n // 2], n // 2), (images[-1], n - 1)]
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     for ax, (img_path, idx) in zip(axes, picks):
-        img = Image.open(img_path)
+        img = cv2.cvtColor(cv2.imread(str(img_path)), cv2.COLOR_BGR2RGB)
         ax.imshow(img)
-        for corners in gt.get(img_path.name, []):
-            xs = [c[0] for c in corners] + [corners[0][0]]
-            ys = [c[1] for c in corners] + [corners[0][1]]
+        box = corners.get(img_path.name)
+        if box:
+            xs = [c[0] for c in box] + [box[0][0]]
+            ys = [c[1] for c in box] + [box[0][1]]
             ax.plot(xs, ys, color="cyan", linewidth=line_width)
         ax.set_title(f"{img_path.name} ({idx + 1}/{n})")
         ax.axis("off")
-    fig.suptitle(f"{run.name} — sanity check LARD GT (piste {target_rwy}, source: {src.name}/)")
+    fig.suptitle(f"{scen.name} — sanity GT LARD (source: {src.name}/)")
     plt.tight_layout()
     plt.show()
 
 
-# ---------------------------------------------------------------------------
-# xplane_config.json + params_trace.xml
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Video MP4
+# ===========================================================================
 
-def build_xplane_config(run_name: str | None = None):
-    """Ecrit run_dir/xplane_config.json depuis yaml + weather_profile.json."""
-    targets = find_runs(run_name=run_name, all_runs=run_name is None)
-    for run in targets:
-        yamls = list(run.glob("*.yaml"))
+def build_video(run_name=None, source=None):
+    """Genere dataset/.../<scenario>/<scenario>.mp4 (fps depuis <scenario>.json).
+
+    :param source: 'images' | 'corrupted_images' (defaut: corrupted prio).
+    """
+    for scen, ds in _iter_run_datasets(run_name=run_name):
+        src = (ds / source) if source else pick_image_source(ds)
+        images = list_images(src)
+        if not images:
+            print(f"  [skip] {scen.name} : pas d'images dans {src.name}/")
+            continue
+
+        fps = _read_fps(scen)
+        first = cv2.imread(str(images[0]))
+        if first is None:
+            print(f"  [skip] {scen.name} : lecture impossible {images[0].name}")
+            continue
+        h, w = first.shape[:2]
+
+        out = ds / f"{scen.name}.mp4"
+        writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+        for img_path in images:
+            img = cv2.imread(str(img_path))
+            if img is not None:
+                writer.write(img)
+        writer.release()
+        print(f"  {scen.name} -> {out.name}  ({len(images)} frames @ {fps}fps, {src.name}/)")
+
+
+# ===========================================================================
+# xplane_config.json + params_trace.xml (sorties on-demand, dans scenarios/)
+# ===========================================================================
+
+def build_xplane_config(run_name=None):
+    """Ecrit scenarios/.../<scenario>/xplane_config.json depuis yaml + meteo."""
+    for scen in find_runs(run_name=run_name, all_runs=run_name is None):
+        yamls = list(scen.glob("*.yaml"))
         if not yamls:
-            print(f"  [skip] {run.name} : pas de yaml")
+            print(f"  [skip] {scen.name} : pas de yaml")
             continue
         meta = yaml.safe_load(yamls[0].read_text())
         img = meta.get("image", {})
-
-        weather_status = "absent"
-        wp = run / "weather_profile.json"
-        if wp.exists():
-            weather_status = "ok"
+        weather_status = "ok" if (scen / "weather_profile.json").exists() else "absent"
 
         cfg = {
             "width": int(img.get("width", 1024)),
@@ -481,22 +266,24 @@ def build_xplane_config(run_name: str | None = None):
             "pilot_eye_z": PILOT_EYE_DEFAULT["z"],
             "weather_status": weather_status,
         }
-        out = run / "xplane_config.json"
-        with open(out, "w") as f:
-            json.dump(cfg, f, indent=2)
-        print(f"  {run.name} -> xplane_config.json ({cfg['width']}x{cfg['height']}, weather={weather_status})")
+        (scen / "xplane_config.json").write_text(json.dumps(cfg, indent=2))
+        print(f"  {scen.name} -> xplane_config.json "
+              f"({cfg['width']}x{cfg['height']}, weather={weather_status})")
 
 
-def build_params_trace(run_name: str | None = None):
-    """Ecrit run_dir/params_trace.xml en agregeant les profils JSON."""
-    targets = find_runs(run_name=run_name, all_runs=run_name is None)
-    for run in targets:
-        poses = json.loads((run / "poses_cam_export.json").read_text()) \
-            if (run / "poses_cam_export.json").exists() else {}
-        weather = (json.loads((run / "weather_profile.json").read_text()).get("weather", {})
-                   if (run / "weather_profile.json").exists() else {})
-        faults = (json.loads((run / "fault_profile.json").read_text()).get("faults", [])
-                  if (run / "fault_profile.json").exists() else [])
+def _xml_value(parent, tag, value):
+    ET.SubElement(parent, tag).text = f"{value}"
+
+
+def build_params_trace(run_name=None):
+    """Ecrit scenarios/.../<scenario>/params_trace.xml en agregeant les profils."""
+    for scen in find_runs(run_name=run_name, all_runs=run_name is None):
+        pj = _poses_json(scen)
+        poses = json.loads(pj.read_text()) if pj else {}
+        weather = (json.loads((scen / "weather_profile.json").read_text()).get("weather", {})
+                   if (scen / "weather_profile.json").exists() else {})
+        faults = (json.loads((scen / "fault_profile.json").read_text()).get("faults", [])
+                  if (scen / "fault_profile.json").exists() else [])
 
         root = ET.Element("test_case")
         scenario = ET.SubElement(root, "scenario", instance="0/0")
@@ -516,74 +303,176 @@ def build_params_trace(run_name: str | None = None):
             ftype = f.get("fault_type", "unknown")
             sub = ET.SubElement(fn, ftype, instance="0/0")
             for k, v in f.items():
-                if k == "fault_type":
-                    continue
-                _xml_value(sub, k, v)
+                if k != "fault_type":
+                    _xml_value(sub, k, v)
 
         xml_str = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
-        (run / "params_trace.xml").write_text(xml_str, encoding="utf-8")
-        print(f"  {run.name} -> params_trace.xml")
+        (scen / "params_trace.xml").write_text(xml_str, encoding="utf-8")
+        print(f"  {scen.name} -> params_trace.xml")
 
 
-# ---------------------------------------------------------------------------
-# Export .esp (Google Earth Studio)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Dataset consolide (agregation des metadata.csv par piste)
+# ===========================================================================
 
-def build_esp(run_name: str | None = None, fov_vertical: float = 30.0):
-    """Genere <scenario>.esp (projet Google Earth Studio) depuis les poses.
+def _write_csv(path, rows):
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=META_COLS)
+        w.writeheader()
+        w.writerows(rows)
 
-    Delegue a ges_export.build_esp_for_scenario (reutilise LARD GEODataset).
-    Opere sur les scenarios du nouveau layout (scenarios/<batch>/<scenario>/
-    contenant <scenario>.json). Le .esp est aussi genere par 'generate'
-    (best-effort) ; cette fonction sert a (re)generer a la demande.
 
-    :param run_name: chemin compose '<batch>/<scenario>' ; None = tous.
-    :param fov_vertical: FOV vertical en degres (GES historique LARD = 30).
+def build_dataset(simulator="xplane", out_dir=DATASET_BUILD_DIR, source=None):
+    """Consolide les datasets par-scenario en une arbo par piste, renumerotee.
+
+    Le pipeline produit deja dataset/<sim>/<icao>/<scenario>/{images,metadata.csv}.
+    Cette fonction AGREGE ces sorties (reutilise metadata.csv, ne recalcule rien) :
+
+        dataset_build/
+            metadata.csv                      # toutes pistes / scenarios
+            <ICAO_RWY>/
+                metadata.csv                  # tous scenarios de la piste
+                <ICAO_RWY>_<NNN>/
+                    images/000000.jpg ...
+                    metadata.csv              # ce scenario
+
+    :param source: 'images' | 'corrupted_images' (defaut: corrupted prio).
     """
-    from ges_export import build_esp_for_scenario
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
 
-    for scen in find_scenarios(name=run_name, all_scenarios=run_name is None):
-        try:
-            out = build_esp_for_scenario(scen, fov_vertical=fov_vertical)
-            print(f"  {scen.name} -> {Path(out).name}")
-        except Exception as e:
-            print(f"  [skip] {scen.name} : {type(e).__name__} {e}")
+    # Regroupe les datasets rendus par piste (ICAO_RWY).
+    by_runway = defaultdict(list)
+    for scen, ds in _iter_run_datasets(all_runs=True, simulator=simulator):
+        by_runway[airport_runway_from_scenario(scen.name)].append((scen, ds))
+
+    summary = {}
+    all_rows = []
+    for rwy_key, runs in sorted(by_runway.items()):
+        runs.sort(key=lambda t: t[0].name)
+        rwy_dir = out_dir / rwy_key
+        rwy_dir.mkdir(parents=True, exist_ok=True)
+        rwy_rows = []
+
+        for idx, (scen, ds) in enumerate(runs, start=1):
+            src = (ds / source) if source else pick_image_source(ds)
+            images = list_images(src)
+            meta_rows = {r["image"].split("/")[-1]: r
+                         for r in csv.DictReader(open(ds / "metadata.csv", newline=""))} \
+                if (ds / "metadata.csv").exists() else {}
+            if not images:
+                summary[scen.name] = (src.name, 0, "absent")
+                continue
+
+            scen_id = f"{rwy_key}_{idx:03d}"
+            img_dir = out_dir / rwy_key / scen_id / "images"
+            img_dir.mkdir(parents=True, exist_ok=True)
+
+            scen_rows = []
+            for i, img in enumerate(images):
+                new_name = f"{i:06d}{img.suffix.lower()}"
+                shutil.copy2(img, img_dir / new_name)
+                base = {c: "" for c in META_COLS}
+                base.update({k: v for k, v in meta_rows.get(img.name, {}).items()
+                             if k in META_COLS})
+                base["scenario"] = scen_id
+                scen_rows.append({**base, "image": f"images/{new_name}"})
+                rwy_rows.append({**base, "image": f"{scen_id}/images/{new_name}"})
+                all_rows.append({**base, "image": f"{rwy_key}/{scen_id}/images/{new_name}"})
+
+            _write_csv(out_dir / rwy_key / scen_id / "metadata.csv", scen_rows)
+            summary[scen.name] = (src.name, len(scen_rows), f"ok -> {rwy_key}/{scen_id}")
+
+        _write_csv(rwy_dir / "metadata.csv", rwy_rows)
+
+    _write_csv(out_dir / "metadata.csv", all_rows)
+
+    total = sum(n for _, n, _ in summary.values())
+    print(f"Dataset consolide : {out_dir}")
+    for name, (kind, n, status) in summary.items():
+        print(f"  {name:<45} <- {kind:<16} ({n:>4} imgs) [{status}]")
+    print(f"Total : {total} images, {len(by_runway)} piste(s)")
+    return summary
 
 
-# ---------------------------------------------------------------------------
-# Video MP4
-# ---------------------------------------------------------------------------
+def regroup_images(mode="piste", src_dir=DATASET_BUILD_DIR, dest_dir=REGROUP_DIR):
+    """Aplati/renumerotte les images de dataset_build/ (+ metadata.csv associe).
 
-def build_video(run_name: str | None = None, source: str | None = None):
-    """Genere runs/<run>/<run>.mp4 (fps depuis poses_cam_export.json).
-
-    source : 'degraded' ou 'footage' (defaut: degraded prio sinon footage).
+    mode="piste" : un dossier par piste (dataset_regroup/<ICAO_RWY>/img/...).
+    mode="all"   : tout dans dataset_regroup/datasetr/img/ (renumerotation globale).
+    Lance d'abord build_dataset().
     """
-    targets = find_runs(run_name=run_name, all_runs=run_name is None)
-    for run in targets:
-        src = (run / source) if source else pick_image_source(run)
-        images = list_images(src)
-        if not images:
-            print(f"  [skip] {run.name} : pas d'images dans {src.name}/")
-            continue
+    if mode not in ("piste", "all"):
+        raise ValueError(f"mode invalide : {mode!r} (attendu 'piste' ou 'all')")
+    if not src_dir.exists():
+        print(f"dataset_build introuvable : {src_dir}\nLance d'abord build_dataset().")
+        return
 
-        fps = 10
-        poses_file = run / "poses_cam_export.json"
-        if poses_file.exists():
-            fps = int(json.loads(poses_file.read_text()).get("fps", 10))
+    meta_by_relpath = {}
+    root_meta = src_dir / "metadata.csv"
+    if root_meta.exists():
+        with open(root_meta, newline="") as f:
+            for row in csv.DictReader(f):
+                meta_by_relpath[row["image"]] = row
 
-        first = cv2.imread(str(images[0]))
-        if first is None:
-            print(f"  [skip] {run.name} : impossible de lire {images[0].name}")
-            continue
-        h, w = first.shape[:2]
+    exts = {".jpg", ".jpeg", ".png"}
 
-        out = run / f"{run.name}.mp4"
-        writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
-        for img_path in images:
-            img = cv2.imread(str(img_path))
-            if img is not None:
-                writer.write(img)
-        writer.release()
+    def _meta_row(img, new_image):
+        relpath = img.relative_to(src_dir).as_posix()
+        base = {c: "" for c in META_COLS}
+        base.update({k: v for k, v in meta_by_relpath.get(relpath, {}).items()
+                     if k in META_COLS})
+        base["image"] = new_image
+        return base
 
-        print(f"  {run.name} -> {out.name}  ({len(images)} frames @ {fps}fps, {src.name}/)")
+    if mode == "piste":
+        by_runway = defaultdict(list)
+        for img in sorted(src_dir.rglob("images/*")):
+            if img.is_file() and img.suffix.lower() in exts:
+                by_runway[img.parent.parent.parent.name].append(img)
+        if not by_runway:
+            print(f"Aucune image dans {src_dir}")
+            return
+        print(f"Regroupement par piste : {dest_dir}")
+        total = 0
+        for rwy, imgs in sorted(by_runway.items()):
+            rwy_dir = dest_dir / rwy
+            img_dir = rwy_dir / "img"
+            if rwy_dir.exists():
+                shutil.rmtree(rwy_dir)
+            img_dir.mkdir(parents=True)
+            rows = []
+            for i, img in enumerate(imgs):
+                new_name = f"{i:06d}{img.suffix.lower()}"
+                shutil.copy2(img, img_dir / new_name)
+                rows.append(_meta_row(img, f"img/{new_name}"))
+            _write_csv(rwy_dir / "metadata.csv", rows)
+            print(f"  {rwy:<15} {len(imgs):>4} imgs -> {rwy}/img/")
+            total += len(imgs)
+        print(f"Total : {total} images, {len(by_runway)} piste(s)")
+    else:
+        flat_dir = dest_dir / "datasetr"
+        img_dir = flat_dir / "img"
+        if flat_dir.exists():
+            shutil.rmtree(flat_dir)
+        img_dir.mkdir(parents=True)
+        by_runway = defaultdict(int)
+        rows = []
+        idx = 0
+        for img in sorted(src_dir.rglob("images/*")):
+            if not img.is_file() or img.suffix.lower() not in exts:
+                continue
+            new_name = f"{idx:06d}{img.suffix.lower()}"
+            shutil.copy2(img, img_dir / new_name)
+            rows.append(_meta_row(img, f"img/{new_name}"))
+            by_runway[img.parent.parent.parent.name] += 1
+            idx += 1
+        if idx == 0:
+            print(f"Aucune image dans {src_dir}")
+            return
+        _write_csv(flat_dir / "metadata.csv", rows)
+        print(f"Regroupement global : {flat_dir}")
+        for rwy, n in sorted(by_runway.items()):
+            print(f"  {rwy:<15} {n:>4} imgs")
+        print(f"Total : {idx} images, {len(by_runway)} piste(s)")

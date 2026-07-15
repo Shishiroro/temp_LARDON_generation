@@ -27,11 +27,11 @@ from config import LARD_ROOT, PROJECT_ROOT
 def _ensure_lard_importable():
     """Rend LARD importable (`from src....`) en ajoutant sa racine au sys.path.
 
-    LARD n'est pas un package installable : son code s'importe lui-meme en
-    `from src....` et lit ses donnees relativement au CWD. On resout sa
-    localisation via config (LARD_HOME / paths.local.json) et on l'ajoute au
-    sys.path ici, une seule fois — toute la connaissance de LARD est confinee
-    a ce module (remplace le _paths.py global).
+    LARD n'est pas un package installable : son code s'importe lui-même en
+    `from src....` et lit ses données relativement au CWD. On résout sa
+    localisation via config (LARD_ROOT / paths.local.json) et on l'ajoute au
+    sys.path ici, une seule fois — toute la connaissance de LARD est confinée
+    à ce module (remplace le _paths.py global).
     """
     lard = str(LARD_ROOT)
     if lard not in sys.path:
@@ -48,7 +48,6 @@ from src.geo.geo_dataset import compute_aiming_point
 from src.geo.geo_utils import ecef2llh
 from src.labeling.label_export import export_labels
 from src.labeling.export_config import DatasetTypes
-from runway_utils import reciprocal_runway, runway_from_run_name
 
 
 # ---------------------------------------------------------------------------
@@ -335,128 +334,3 @@ def generate_gt_csv(scenario_dir, out_dir, images_dir):
         csv_name="labels_lard.csv",
     )
     return Path(csv_file)
-
-
-def load_gt_corners(csv_path, runway=None):
-    """Charge un *_labels.csv LARD et retourne {image_name: [[(x,y) x 4], ...]}.
-
-    Si runway fourni, filtre sur cette piste + son reciprocal (meme bande physique).
-    Sinon retourne toutes les pistes.
-
-    Coordonnees retournees en float (cast a int au besoin par l'appelant).
-    """
-    import csv as csvmod
-
-    keep = None
-    if runway:
-        def _norm(r):
-            return str(r).lstrip("0") or "0"
-        keep = {_norm(runway), _norm(reciprocal_runway(runway))}
-
-    out = {}
-    with open(csv_path, "r") as f:
-        reader = csvmod.DictReader(f, delimiter=";")
-        for row in reader:
-            if keep is not None:
-                rwy = str(row.get("runway", "")).lstrip("0") or "0"
-                if rwy not in keep:
-                    continue
-            fname = Path(row["image"]).name
-            corners = [
-                (float(row["x_TR"]), float(row["y_TR"])),
-                (float(row["x_TL"]), float(row["y_TL"])),
-                (float(row["x_BL"]), float(row["y_BL"])),
-                (float(row["x_BR"]), float(row["y_BR"])),
-            ]
-            out.setdefault(fname, []).append(corners)
-    return out
-
-
-def annotate_gt(run_dir, csv_path=None, runway=None, max_images=0,
-                out_dir=None, prefix="gt_"):
-    """Dessine les bbox GT LARD sur les images dans `out_dir`.
-
-    :param run_dir: dossier du run (contient footage/ + <stem>_labels.csv)
-    :param csv_path: CSV GT (defaut: auto-detecte run_dir/*_labels.csv)
-    :param runway: filtre une piste (defaut: extrait du nom du run).
-                   Le reciprocal est aussi accepte (meme bande physique).
-    :param max_images: 0 = toutes
-    :param out_dir: dossier de sortie (defaut: run_dir/annotated_lard/)
-    :param prefix: prefixe des fichiers de sortie (defaut: "gt_")
-    """
-    from PIL import Image, ImageDraw, ImageFont
-
-    run_dir = Path(run_dir)
-    footage_dir = run_dir / "footage"
-    out_dir = Path(out_dir) if out_dir is not None else run_dir / "annotated_lard"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if csv_path is None:
-        csvs = list(run_dir.glob("*_labels.csv"))
-        if not csvs:
-            raise FileNotFoundError(f"Pas de *_labels.csv dans {run_dir}")
-        csv_path = csvs[0]
-
-    target_runway = runway or runway_from_run_name(run_dir.name)
-
-    # Police lisible (arial sur Windows, DejaVu/Liberation sur Linux)
-    font = None
-    for ttf in ["arial.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"]:
-        try:
-            font = ImageFont.truetype(ttf, 20)
-            break
-        except OSError:
-            continue
-    if font is None:
-        font = ImageFont.load_default()
-
-    # Reutilise le parser commun, cast en int pour PIL
-    raw_entries = load_gt_corners(csv_path, runway=target_runway)
-    entries = {
-        fname: [
-            {"corners": tuple((int(x), int(y)) for x, y in corners),
-             "runway": target_runway or "?"}
-            for corners in corners_list
-        ]
-        for fname, corners_list in raw_entries.items()
-    }
-
-    COLORS = ["cyan", "red", "yellow", "lime", "magenta", "orange"]
-    runway_colors = {}
-    color_idx = 0
-    processed = 0
-
-    # Affichage : la piste d'approche (pas le reciprocal LARD)
-    display_runway = target_runway
-
-    for filename in sorted(entries.keys()):
-        if max_images > 0 and processed >= max_images:
-            break
-        img_path = footage_dir / filename
-        if not img_path.exists():
-            continue
-
-        img = Image.open(img_path).convert("RGB")
-        draw = ImageDraw.Draw(img)
-
-        for entry in entries[filename]:
-            rwy = display_runway or entry["runway"]
-            if rwy not in runway_colors:
-                runway_colors[rwy] = COLORS[color_idx % len(COLORS)]
-                color_idx += 1
-            color = runway_colors[rwy]
-            c = entry["corners"]
-            for i in range(4):
-                draw.line([c[i], c[(i + 1) % 4]], fill=color, width=1)
-            cx = sum(p[0] for p in c) // 4
-            cy = min(p[1] for p in c) - 25
-            bbox = draw.textbbox((cx, cy), rwy, font=font)
-            draw.rectangle([bbox[0] - 2, bbox[1] - 2, bbox[2] + 2, bbox[3] + 2], fill="black")
-            draw.text((cx, cy), rwy, fill=color, font=font)
-
-        img.save(out_dir / f"{prefix}{filename}")
-        processed += 1
-
-    print(f"  [GT-VIS] {processed} images annotees dans {out_dir.name}/")

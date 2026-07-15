@@ -801,7 +801,7 @@ def render_scenario(poses_path, output_dir, config=None, weather_profile_path=No
 
     finally:
         # Pas de clear meteo ici — le prochain set_weather (isIncremental=False)
-        # ecrase tout. Le clear final est fait par run_pipeline.py apres tous les scenarios.
+        # écrase tout. Le clear final est fait par le pipeline (main.py) après tous les scénarios.
         conn.close()
 
     return output_dir

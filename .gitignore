@@ -8,6 +8,14 @@ runs/
 scenarios/
 dataset/
 
+# Sorties on-demand du notebook (consolidation / regroupement)
+dataset_build/
+dataset_regroup/
+
+# Config machine locale (chemins LARD/TAF/X-Plane) — propre a chaque poste.
+# Genere par scripts/install_lard.py ; ne pas versionner (chemins perso).
+paths.local.json
+
 # Python
 __pycache__/
 *.pyc

@@ -128,8 +128,8 @@ def run(nb_test_cases=None, runway=None, verbose=True):
     if taf_src not in sys.path:
         sys.path.insert(1, taf_src)
 
-    # Copier notre Export.py dans taf/src/ (point d'extension prevu par TAF).
-    # taf/src est resolu via config (TAF_HOME / paths.local.json).
+    # Copier notre Export.py dans taf/src/ (point d'extension prévu par TAF).
+    # taf/src est résolu via config (TAF_SRC / paths.local.json).
     src_export = project_dir / "taf_export.py"
     taf_export = TAF_SRC / "Export.py"
     shutil.copy2(src_export, taf_export)

@@ -72,7 +72,14 @@ git clone -b LARD_V2 https://github.com/deel-ai/LARD
 
 ### 3. Récupérer TAF
 
-TAF n'est **pas** inclus dans le dépôt. Depuis la racine du projet :
+TAF n'est **pas** inclus dans le dépôt et **n'est pas un package pip**. Un script
+le clone et enregistre son chemin :
+
+```bash
+py scripts/install_taf.py
+```
+
+Équivalent manuel (depuis la racine du projet) :
 
 ```bash
 git clone https://redmine.laas.fr/laas/taf.git

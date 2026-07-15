@@ -11,9 +11,11 @@ son chemin `image` est relatif au scenario ("images/<fichier>").
 
 import csv
 import json
+import re
 from pathlib import Path
 
 from scenario import list_images, airport_runway_from_scenario
+from runway_utils import reciprocal_runway
 
 # Colonnes du metadata.csv — alignees sur l'ancien build_dataset / CSV LARD.
 META_COLS = [
@@ -38,12 +40,26 @@ LARD_PASSTHROUGH = [
 ]
 
 
-def _load_lard_rows(gt_csv):
-    """Indexe le CSV GT LARD (delimiteur ';') par nom d'image."""
-    rows = {}
+def _norm_rwy(rwy):
+    """Normalise un numero de piste pour comparaison ('08L' -> '8L', '29' -> '29')."""
+    m = re.match(r"^(\d{1,2})([LRC]?)$", str(rwy).strip())
+    return f"{int(m.group(1))}{m.group(2)}" if m else str(rwy).strip()
+
+
+def _load_lard_rows(gt_csv, target_runway):
+    """Lignes GT LARD (delim ';') de la piste cible, dans l'ordre des frames.
+
+    LARD emet une ligne par piste visible dans le cone camera (souvent
+    plusieurs pistes par frame). On ne garde que la piste du scenario (+ sa
+    reciproque, meme bande physique), en preservant l'ordre d'ecriture = ordre
+    des poses = ordre des frames. La liste retournee a donc une ligne par frame.
+    """
+    keep = {_norm_rwy(target_runway), _norm_rwy(reciprocal_runway(target_runway))}
+    rows = []
     with open(gt_csv, newline="") as f:
         for row in csv.DictReader(f, delimiter=";"):
-            rows[Path(row["image"]).name] = row
+            if _norm_rwy(row.get("runway", "")) in keep:
+                rows.append(row)
     return rows
 
 
@@ -126,14 +142,29 @@ def build_metadata_csv(scenario_dir, images_dir, gt_csv, simulator, out_csv):
     icao_rwy = airport_runway_from_scenario(scenario_name)   # KPDX_10L
     airport_def, _, runway_def = icao_rwy.partition("_")
 
-    lard_rows = _load_lard_rows(gt_csv)
+    lard_rows = _load_lard_rows(gt_csv, runway_def)
     time_of_day = _load_time_of_day(scenario_dir)
     weather = _weather_label(_read_template_name(scenario_dir))
 
+    images = list_images(images_dir)
+
+    # Association frame -> ligne GT. LARD ecrit une ligne par frame (apres
+    # filtrage sur la piste), dans l'ordre des poses = ordre des frames.
+    # Si LARD a rempli la colonne 'image' (images trouvees dans footage/), on
+    # matche par nom ; sinon (mode with_images=False) on aligne par index.
+    by_name = {Path(r["image"]).name: r for r in lard_rows if r.get("image", "").strip()}
+    use_names = len(by_name) == len(lard_rows) and lard_rows
+    if len(lard_rows) != len(images):
+        print(f"  [metadata] ATTENTION : {len(lard_rows)} lignes GT (piste "
+              f"{runway_def}) pour {len(images)} images — jointure best-effort")
+
     rows = []
-    for img in list_images(images_dir):
+    for idx, img in enumerate(images):
         base = {c: "" for c in META_COLS}
-        lard = lard_rows.get(img.name, {})
+        if use_names:
+            lard = by_name.get(img.name, {})
+        else:
+            lard = lard_rows[idx] if idx < len(lard_rows) else {}
         for k in LARD_PASSTHROUGH:
             if k in lard:
                 base[k] = lard[k]
