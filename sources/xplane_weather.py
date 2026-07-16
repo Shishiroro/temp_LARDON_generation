@@ -151,14 +151,13 @@ def build_plugin_command(config, aircraft_max_alt_m=200.0, latitude=0.0, longitu
         "max_alt_ft": 30000.0,
     }
 
-    # Temperature : TOUJOURS envoyee.
-    # Un filtre `if config.temperature_c != 15.0` existait ici (15C = defaut
-    # X-Plane, donc juge "inutile a envoyer"). Il cassait le brouillard : cote
-    # plugin tout le bloc temperature/point de rosee est conditionne a la
-    # presence de cette cle, et c'est le point de rosee qui pilote la visibilite
-    # (air sature = brouillard). Avec un template centre sur 15C (base.xml :
-    # plage -15..45 -> milieu = 15.0 pile) la cle disparaissait et le fog ne
-    # pouvait jamais s'appliquer.
+    # Temperature : TOUJOURS envoyee, meme egale au defaut X-Plane (15 C).
+    # Cote plugin, `info` est relu du sim (getWeatherAtLocation) : une cle absente
+    # ne veut pas dire "prendre le defaut" mais "garder la valeur courante", donc
+    # celle du scenario precedent. Omettre 15.0 faisait heriter la temperature
+    # (ex: -15 C d'un scenario neige -> le suivant rend de la neige en annoncant
+    # 15 C). Le plugin conditionne aussi tout le bloc temperature/rosee a cette
+    # cle : sans elle, pas de rosee, donc brouillard impossible.
     params["temperature_c"] = config.temperature_c
 
     # Heure du jour — conversion locale → UTC via fuseau politique (timezonefinder + pytz)
@@ -195,9 +194,10 @@ def build_plugin_command(config, aircraft_max_alt_m=200.0, latitude=0.0, longitu
         params["cloud_base_msl"] = cloud_base
         params["cloud_top_msl"] = cloud_base + thickness
 
-    # Taille des gouttes (dataref prive, ignore si non supporte)
-    if config.rain_scale != 1.0:
-        params["rain_scale"] = config.rain_scale
+    # Taille des gouttes (dataref prive, ignore si non supporte).
+    # TOUJOURS envoyee : meme fuite d'etat que temperature_c ci-dessus. Omettre
+    # 1.0 laissait le dataref au rain_scale du scenario precedent (ex: 5.0).
+    params["rain_scale"] = config.rain_scale
 
     return params
 

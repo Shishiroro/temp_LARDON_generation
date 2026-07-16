@@ -13,14 +13,12 @@ Key implementation notes (XPLMWeather quirks discovered while building this):
     we MUST set them explicitly each call or XP ignores the injection.
   - isIncremental=False replaces all prior records (used both for set
     and for clear).
-  - XPLMWeatherInfo_t only exposes SCALARS (temperature_alt / dewpoint_alt) —
-    there is NO temp_layers / dewp_layers (see XPPython3/xp_typing.py). Older
-    code wrote to those inside a try/except that swallowed the AttributeError,
-    so the dewpoint was never actually set.
-  - XP12 DERIVES visibility from humidity (temperature <-> dewpoint spread) and
-    overrides the value we send: with a ~18C spread (dry air) it recomputed
-    20-40 km, hence no fog despite vis=500m. Fog requires saturating the air
-    (spread ~0), which is why we only touch dewpoint_alt when fog is requested.
+  - XPLMWeatherInfo_t only exposes SCALARS (temperature_alt / dewpoint_alt);
+    there is NO temp_layers / dewp_layers (see XPPython3/xp_typing.py) — those
+    are region datarefs (temperatures_aloft_deg_c / dewpoint_deg_c, float[13]),
+    a different API. Do not try to write layers through this struct.
+  - Driving fog through the region datarefs was tried (see git history) and
+    reverted: it fixed fog but broke the other profiles.
 
 Installation:
   Copy this file to X-Plane 12/Resources/plugins/PythonPlugins/
@@ -39,23 +37,6 @@ try:
     import xp
 except ImportError:
     raise RuntimeError("PI_weather requires XPPython3")
-
-
-# ---------------------------------------------------------------------------
-# Constantes meteo
-# ---------------------------------------------------------------------------
-
-# sim/weather/region/visibility_reported_sm est en MILES TERRESTRES (XP12),
-# alors que notre pipeline raisonne en metres -> conversion obligatoire.
-METERS_PER_STATUTE_MILE = 1609.344
-
-# En dessous de cette visibilite (m), on considere que du brouillard est demande
-# et on sature l'air (rosee = temperature) pour que XP12 le rende reellement.
-FOG_VISIBILITY_THRESHOLD_M = 5000.0
-
-# Les datarefs atmospheriques region sont des float[13]
-# (cf sim/weather/region/atmosphere_alt_levels_m).
-ATMOSPHERE_LAYERS = 13
 
 
 # ---------------------------------------------------------------------------
@@ -118,23 +99,6 @@ class PythonInterface:
 
             # Weather mode control (replaces deprecated use_real_weather_bool)
             self.dr_change_mode = xp.findDataRef("sim/weather/region/change_mode")
-
-            # --- Brouillard : datarefs region (writable) ---
-            # L'API XPLMWeather est experimentale et sa `visibility` est
-            # recalculee par XP12 -> on pilote le brouillard par les datarefs
-            # region, qui sont la VRAIE base modifiable (cf DataRefs.txt).
-            # ATTENTION : visibility_reported_sm est en MILES TERRESTRES.
-            self.dr_visibility_sm = xp.findDataRef(
-                "sim/weather/region/visibility_reported_sm")
-            # Couches atmospheriques float[13] : XP12 derive la visibilite de
-            # l'humidite (ecart temperature <-> rosee). Air sature = brouillard.
-            self.dr_temps_aloft = xp.findDataRef(
-                "sim/weather/region/temperatures_aloft_deg_c")
-            self.dr_dewpoint = xp.findDataRef(
-                "sim/weather/region/dewpoint_deg_c")
-            # Applique immediatement les changements region (sauf nuages)
-            self.dr_update_now = xp.findDataRef(
-                "sim/weather/region/update_immediately")
 
             # Time of day
             self.dr_zulu_time = xp.findDataRef("sim/time/zulu_time_sec")
@@ -285,24 +249,14 @@ class PythonInterface:
         # -- Visibility --
         info.visibility = float(weather.get("visibility_m", 50000.0))
 
-        # -- Temperature / point de rosee (brouillard) --
+        # -- Temperature (for snow: < 0°C) --
         # XPLMWeatherInfo_t n'expose QUE des scalaires (cf XPPython3/xp_typing.py) :
-        # temperature_alt / dewpoint_alt. temp_layers / dewp_layers N'EXISTENT PAS.
-        # L'ancien code les ecrivait dans un try/except qui avalait l'AttributeError
-        # en silence => le point de rosee n'etait JAMAIS regle.
-        #
-        # Consequence : XP12 DERIVE la visibilite de l'humidite (ecart temperature
-        # <-> point de rosee) et ECRASE la valeur envoyee. Avec ~18C d'ecart (air
-        # sec), il recalculait 20-40 km -> aucun brouillard malgre vis=500m.
-        # Pour du brouillard il faut saturer l'air : ecart ~0.
-        #
-        # On ne touche au dewpoint QUE si du brouillard est demande, afin de ne
-        # rien changer aux autres profils (clear / pluie / nuages / neige).
+        # temperature_alt / dewpoint_alt. temp_layers / dewp_layers N'EXISTENT PAS,
+        # c'est une confusion avec les datarefs region temperatures_aloft_deg_c /
+        # dewpoint_deg_c (float[13]). Une boucle sur info.temp_layers levait donc
+        # un AttributeError avale par un except/pass : bloc mort, retire ici.
         if "temperature_c" in weather:
-            temp = float(weather["temperature_c"])
-            info.temperature_alt = temp
-            if info.visibility < FOG_VISIBILITY_THRESHOLD_M:  # brouillard demande
-                info.dewpoint_alt = temp      # ecart 0 = air sature = brouillard
+            info.temperature_alt = float(weather["temperature_c"])
 
         # -- Coverage radius and altitude cap --
         # CRITICAL: getWeatherAtLocation returns 0 for these fields,
@@ -326,27 +280,6 @@ class PythonInterface:
         with xp.weatherUpdateContext(isIncremental=False, updateImmediately=True):
             xp.setWeatherAtLocation(lat, lon, elev, info)
 
-        # -- Brouillard : datarefs region (APRES setWeatherAtLocation) --
-        # `info.visibility` (XPLMWeather) est recalculee par XP12 et ne tient
-        # pas. On pilote donc la visibilite par le dataref region, qui est la
-        # base modifiable. Deux pieges traites ici :
-        #   1) l'unite : visibility_reported_sm est en MILES TERRESTRES ;
-        #   2) XP12 derive la visibilite de l'humidite -> pour du brouillard il
-        #      faut saturer l'air (rosee = temperature sur les 13 couches).
-        # A faire APRES setWeatherAtLocation, sinon l'injection ecrase tout.
-        vis_m = float(weather.get("visibility_m", 50000.0))
-        xp.setDataf(self.dr_visibility_sm, vis_m / METERS_PER_STATUTE_MILE)
-
-        if vis_m < FOG_VISIBILITY_THRESHOLD_M:
-            # Saturer l'air : rosee = temperature, couche par couche.
-            temps = []
-            xp.getDatavf(self.dr_temps_aloft, temps, 0, ATMOSPHERE_LAYERS)
-            if temps:
-                xp.setDatavf(self.dr_dewpoint, temps, 0, len(temps))
-
-        # Applique immediatement les changements region (sauf nuages)
-        xp.setDatai(self.dr_update_now, 1)
-
         # -- Rain drop scale (private dataref, hors XPLMWeather) --
         if "rain_scale" in weather and self.dr_rain_scale is not None:
             try:
@@ -355,16 +288,8 @@ class PythonInterface:
                 xp.log(f"LARD Weather v2: rain_scale error: {e}")
 
         time_str = f" time={weather['time_of_day_h']}h" if "time_of_day_h" in weather else ""
-        # Diagnostic : ce qu'on ENVOIE reellement pour temp/rosee. "ABSENT" =
-        # la cle temperature_c n'est pas dans le JSON -> tout le bloc
-        # temperature/dewpoint a ete saute (donc pas de brouillard possible).
-        if "temperature_c" in weather:
-            temp_str = (f" temp={info.temperature_alt:.1f}C"
-                        f" dewp={info.dewpoint_alt:.1f}C")
-        else:
-            temp_str = " temp=ABSENT(cle non envoyee)"
         cloud_str = "auto (XP12)" if cloud_type is None else f"type={cloud_type:.0f} cov={cloud_coverage:.1f} {cloud_base:.0f}-{cloud_top:.0f}m"
-        xp.log(f"LARD Weather v2: SET clouds=[{cloud_str}]{temp_str} "
+        xp.log(f"LARD Weather v2: SET clouds=[{cloud_str}] "
                f"precip={info.precip_rate:.2f} "
                f"vis={info.visibility:.0f}m radius={info.radius_nm:.0f}nm"
                f"{time_str} at ({lat:.4f}, {lon:.4f})")
@@ -372,17 +297,6 @@ class PythonInterface:
         # Readback : verifier ce que XP12 a reellement applique
         try:
             rb = xp.getWeatherAtLocation(lat, lon, elev)
-            # Visibilite relue vs envoyee. XP12 derive le brouillard de
-            # l'humidite (ecart temperature <-> point de rosee) : si la valeur
-            # relue differe de celle envoyee, XP12 a recalcule et ignore la
-            # notre. Un ecart temp/rosee proche de 0 = air sature = brouillard.
-            vis_rb = getattr(rb, "visibility", float("nan"))
-            temp_rb = getattr(rb, "temperature_alt", float("nan"))
-            dewp_rb = getattr(rb, "dewpoint_alt", float("nan"))
-            xp.log(f"LARD Weather v2: READBACK vis={vis_rb:.0f}m "
-                   f"(envoye={info.visibility:.0f}m) "
-                   f"temp={temp_rb:.1f}C dewpoint={dewp_rb:.1f}C "
-                   f"(ecart={temp_rb - dewp_rb:.1f}C)")
             for i in range(min(3, len(rb.cloud_layers))):
                 cl = rb.cloud_layers[i]
                 xp.log(f"LARD Weather v2: READBACK layer[{i}] "
