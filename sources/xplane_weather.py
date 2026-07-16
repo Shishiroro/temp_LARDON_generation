@@ -17,7 +17,7 @@ Parametres directs XP12 (plus de severity/from_pct/to_pct) :
   - precip_rate     : taux precipitation [0, 1]
   - cloud_type      : enum XPLMWeather (0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus, -1=off)
   - cloud_coverage  : couverture nuageuse [0, 1]
-  - fog_visibility  : visibilite en metres [500, 50000]
+  - fog_visibility  : visibilite en metres ]0, 50000] — 50000 = pas de brouillard
   - temperature_c   : temperature Celsius [-30, 45] — < 0 = neige
   - time_of_day_h   : heure locale [0, 24]
 
@@ -86,8 +86,13 @@ def validate_weather(config):
         raise ValueError(f"cloud_type={config.cloud_type} hors [-1, 3]")
     if not 0.0 <= config.cloud_coverage <= 1.0:
         raise ValueError(f"cloud_coverage={config.cloud_coverage} hors [0, 1]")
-    if not 500 <= config.fog_visibility <= 50000:
-        raise ValueError(f"fog_visibility={config.fog_visibility} hors [500, 50000]")
+    # Borne basse : > 0 seulement. Le plancher a 500 m etait arbitraire (aucune
+    # contrainte X-Plane derriere) et interdisait pile la plage utile : un vrai
+    # brouillard dense (CAT III) fait 50-200 m.
+    # La borne haute, elle, est structurelle : 50000 est la sentinelle "pas de
+    # brouillard" (defaut de WeatherConfig, teste par has_weather).
+    if not 0 < config.fog_visibility <= 50000:
+        raise ValueError(f"fog_visibility={config.fog_visibility} hors ]0, 50000]")
     if not -30 <= config.temperature_c <= 45:
         raise ValueError(f"temperature_c={config.temperature_c} hors [-30, 45]")
     if not 0 <= config.time_of_day_h <= 24:
@@ -175,22 +180,21 @@ def build_plugin_command(config, aircraft_max_alt_m=200.0, latitude=0.0, longitu
     # (meme petite, ex: 50 m) est respectee telle quelle — on ne plancher pas.
     THICKNESS_DEFAULT_BY_TYPE = {0: 1000, 1: 500, 2: 2000, 3: 6000}  # Cirrus/Stratus/Cumulus/Cb
     cloud_base = aircraft_max_alt_m + config.cloud_margin_m
+    # Le type de nuage vient TOUJOURS du XML : aucun genre n'est force ici.
+    # Un `elif precip_rate > 0` imposait auparavant un Cumulonimbus (et une
+    # couverture a 1.0, ecrasant cloud_coverage) quand cloud_type valait -1.
+    # Deux raisons de l'avoir retire : le genre est un choix de l'utilisateur,
+    # et X-Plane 12.4.1 ("Changed the interpretation of cloud groups to reduce
+    # unwanted CB") a change le traitement des CB — un genre impose en douce
+    # rendait la pluie dependante d'une decision absente du XML.
+    # Consequence assumee : precip_rate > 0 avec cloud_type = -1 ne donne PAS
+    # de pluie (pas de nuage = pas de source). Il faut choisir un genre.
     if config.cloud_type >= 0:
-        # Nuages manuels demandes par l'utilisateur
         thickness = config.cloud_thickness_m
         if thickness <= 0:
             thickness = THICKNESS_DEFAULT_BY_TYPE.get(int(config.cloud_type), 2000)
         params["cloud_type"] = config.cloud_type
         params["cloud_coverage"] = config.cloud_coverage
-        params["cloud_base_msl"] = cloud_base
-        params["cloud_top_msl"] = cloud_base + thickness
-    elif config.precip_rate > 0:
-        # Pluie sans nuages manuels : forcer Cumulonimbus
-        # XP12 ne genere pas ses propres nuages via l'API setWeatherAtLocation,
-        # contrairement a l'interface utilisateur
-        thickness = config.cloud_thickness_m if config.cloud_thickness_m > 0 else THICKNESS_DEFAULT_BY_TYPE[3]
-        params["cloud_type"] = 3.0   # Cumulonimbus
-        params["cloud_coverage"] = 1.0
         params["cloud_base_msl"] = cloud_base
         params["cloud_top_msl"] = cloud_base + thickness
 

@@ -70,12 +70,18 @@
              METEO X-Plane 12 (per-scenario, injectee 1x avant rendu)
              ===========================================================
              COMPORTEMENT :
-               - Pluie seule    (precip > 0, cloud_type = -1) : Cumulonimbus auto
                - Nuages seuls   (cloud_type >= 0, precip = 0) : nuages manuels
                - Pluie + nuages (precip > 0, cloud_type >= 0) : nuages manuels
+               - Pluie seule    (precip > 0, cloud_type = -1) : PAS de pluie
+                   (pas de nuage = pas de source). Choisir un genre.
                - Rien           (precip = 0, cloud_type = -1) : pas d'injection
 
-             cloud_type enum : 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus, -1=auto
+             Le genre de nuage n'est JAMAIS impose par le code : il vient d'ici.
+             (Un Cumulonimbus etait force quand precip > 0 et cloud_type = -1 ;
+             retire — cf. XP 12.4.1 "reduce unwanted CB".)
+
+             cloud_type enum : 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus,
+                               -1 = aucun nuage manuel
 
              Ce fichier (base.xml) garde des valeurs meteo de base.
              Les variantes de profil (brouillard, nuages, pluie, neige, clair)
@@ -90,14 +96,14 @@
             <!-- @@WEATHER_BLOCK_START@@ -->
 
             <!-- Precipitation : 0 = pas de pluie/neige.
-                 Si > 0 ET cloud_type=-1 : Cumulonimbus force auto (sinon pas de source) -->
-            <parameter name="precip_rate"             type="real" min="0"   max="1"/>
+                 Necessite un cloud_type >= 0 : pas de nuage = pas de source. -->
+            <parameter name="precip_rate"             type="real" min="1"   max="1"/>
 
             <!-- cloud_type :
                   -1 = pas de nuages manuels (avec precip=0 -> ciel degage)
                    0 = Cirrus, 1 = Stratus, 2 = Cumulus, 3 = Cumulonimbus -->
-            <parameter name="cloud_type"              type="integer" min="0"    max="3"/>
-            <parameter name="cloud_coverage"          type="real" min="0"     max="1"/>  <!-- Taux de couverture nuageuse : 0=degage, 1=couvert -->
+            <parameter name="cloud_type"              type="integer" min="2"    max="2"/>
+            <parameter name="cloud_coverage"          type="real" min="1"     max="1"/>  <!-- Taux de couverture nuageuse : 0=degage, 1=couvert -->
 
             <!-- Epaisseur du nuage (alt_top = alt_base + thickness)
                  IMPORTANT : si 0, XPLMWeather cree un nuage degenere (base=top) qui ne
@@ -105,7 +111,7 @@
             <parameter name="cloud_thickness_m"       type="real" min="500"  max="3000"/>
 
             <!-- Visibilite (m) -->
-            <parameter name="fog_visibility"          type="real" min="20000" max="50000"/>
+            <parameter name="fog_visibility"          type="real" min="30000" max="30000"/>
 
             <!-- Temperature (°C) : pluie vs neige -->
             <parameter name="temperature_c"           type="real" min="-15"   max="45"/>
@@ -113,10 +119,10 @@
             <!-- Taille gouttes (visuel uniquement, dataref privé XP12, susceptible
                  d'être cassé dans de futures versions).
                  1.0=defaut, 0.1=fines, 5.0=grosses. Ignore si precip=0. -->
-            <parameter name="rain_scale"              type="real" min="0"     max="5"/>
+            <parameter name="rain_scale"              type="real" min="5"     max="5"/>
   
             <!-- Marge nuages (m) au-dessus de l'avion pour la base nuages -->
-            <parameter name="cloud_margin_m"          type="real" min="500"  max="3000"/>
+            <parameter name="cloud_margin_m"          type="real" min="500"  max="1500"/>
 
             <!-- @@WEATHER_BLOCK_END@@ -->
 
