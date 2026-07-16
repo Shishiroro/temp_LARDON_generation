@@ -151,9 +151,15 @@ def build_plugin_command(config, aircraft_max_alt_m=200.0, latitude=0.0, longitu
         "max_alt_ft": 30000.0,
     }
 
-    # Temperature
-    if config.temperature_c != 15.0:
-        params["temperature_c"] = config.temperature_c
+    # Temperature : TOUJOURS envoyee.
+    # Un filtre `if config.temperature_c != 15.0` existait ici (15C = defaut
+    # X-Plane, donc juge "inutile a envoyer"). Il cassait le brouillard : cote
+    # plugin tout le bloc temperature/point de rosee est conditionne a la
+    # presence de cette cle, et c'est le point de rosee qui pilote la visibilite
+    # (air sature = brouillard). Avec un template centre sur 15C (base.xml :
+    # plage -15..45 -> milieu = 15.0 pile) la cle disparaissait et le fog ne
+    # pouvait jamais s'appliquer.
+    params["temperature_c"] = config.temperature_c
 
     # Heure du jour — conversion locale → UTC via fuseau politique (timezonefinder + pytz)
     zulu_h = local_hour_to_zulu(config.time_of_day_h, latitude, longitude)
