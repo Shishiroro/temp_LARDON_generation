@@ -55,14 +55,8 @@ evaluation/yolo/weights/last.pt
 
 # Docs internes
 CLAUDE.md
-
-# Claude Code
 .claude/
 
 # Tests (locaux, non versionnes)
 tests/
 
-
-
-# Recap local de la restructuration (non pousse)
-MODIFICATIONS.txt

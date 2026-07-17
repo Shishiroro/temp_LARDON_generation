@@ -30,24 +30,28 @@ from scenario import (
 )
 
 
-def _precreate_output_dirs(project_dir):
+def _precreate_output_dirs(project_dir, experiment_dir):
     """
     Pre-cree l'arborescence de sortie TAF.
 
     TAF utilise `mkdir -p` (Unix) qui n'existe pas sur Windows.
     Sur Linux, TAF gere tout seul, mais on pre-cree quand meme
     pour uniformiser le comportement cross-platform.
+
+    `experiment_dir` est passe par l'appelant (= TAF_OUTPUT_DIR, absolu) plutot
+    que relu de settings.xml : le chemin du sas etait defini a deux endroits, et
+    les desynchroniser ne leve AUCUNE erreur (create_scenarios_from_taf_output
+    rglob sur un dossier vide et rend zero scenario, en silence).
     """
     tree = ET.parse(project_dir / "settings.xml")
     params = {p.attrib["name"]: p.attrib["value"] for p in tree.getroot()}
 
     nb_cases = int(params.get("nb_test_cases", 3))
     nb_artifacts = int(params.get("nb_test_artifacts", 1))
-    experiment = Path(params["experiment_path"]) / params["experiment_folder_name"]
 
     for i in range(nb_cases):
         for j in range(nb_artifacts):
-            d = experiment / f"{params['test_case_folder_name']}_{i}" / f"{params['test_artifact_folder_name']}_{j}"
+            d = experiment_dir / f"{params['test_case_folder_name']}_{i}" / f"{params['test_artifact_folder_name']}_{j}"
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -141,7 +145,9 @@ def run(nb_test_cases=None, runway=None, verbose=True):
     # create_minimal_export creerait sinon.
     shutil.copy2(src_export, project_dir / "Export.py")
 
-    # Surcharger nb_test_cases dans le XML avant import TAF (SETTINGS lit au module-level)
+    # Surcharger nb_test_cases dans le XML avant import TAF (SETTINGS lit au module-level).
+    # NB : ce tree.write() reecrit settings.xml et ET NE PRESERVE PAS LES COMMENTAIRES.
+    # Inutile d'en mettre dans settings.xml : ils disparaissent au 1er generate.
     if nb_test_cases is not None:
         settings_file = project_dir / "settings.xml"
         tree = ET.parse(settings_file)
@@ -153,7 +159,7 @@ def run(nb_test_cases=None, runway=None, verbose=True):
     # TAF utilise `mkdir -p` (Unix) qui casse sur Windows, et sur Linux ouvre
     # un prompt interactif au premier passage. On pre-cree l'arborescence
     # avec Path.mkdir() (cross-platform) pour court-circuiter les deux.
-    _precreate_output_dirs(project_dir)
+    _precreate_output_dirs(project_dir, TAF_OUTPUT_DIR)
 
     # NB : au 1er `import Taf`, TAF (Export_Generator.create_minimal_export)
     # teste ./Export.py et affiche sinon un message verbeux
@@ -164,6 +170,17 @@ def run(nb_test_cases=None, runway=None, verbose=True):
     # Resync SETTINGS : `import Taf` est cache par le kernel Jupyter, donc
     # le singleton SETTINGS garde le nb_test_cases du 1er appel sans ca.
     _sync_taf_settings()
+
+    # Pointer TAF sur TAF_OUTPUT_DIR (= config.OUTPUT_DIR/taf), EN MEMOIRE.
+    # settings.xml est VERSIONNE : y ecrire l'output_dir perso de l'utilisateur
+    # serait la fuite de chemins qui a fait supprimer _paths.py. On surcharge donc
+    # le singleton, comme le fait --runway pour template_file_name juste apres.
+    # Doit venir APRES _sync_taf_settings(), qui reecrase SETTINGS depuis le XML.
+    # Le separateur final est OBLIGATOIRE : Taf.py concatene ces deux chaines
+    # (experiment_path + experiment_folder_name + "/"), il ne fait pas de Path.
+    params = Taf.SETTINGS.get_setting_parameters()
+    params["experiment_path"] = str(TAF_OUTPUT_DIR.parent) + os.sep
+    params["experiment_folder_name"] = TAF_OUTPUT_DIR.name
 
     # Forcer une piste unique : reecrit airport_runway dans un template
     # temporaire et pointe SETTINGS dessus (base.xml reste intact).
@@ -207,18 +224,18 @@ def run(nb_test_cases=None, runway=None, verbose=True):
     print("\n[Generate] Termine.")
 
 
-def generate_runs(nb_scenarios=None, name=None, clean=False, runway=None):
-    """Phase 1 complete : cleanup output/ + run() TAF + organise en scenarios/<batch>/.
+def generate_scenarios(nb_scenarios=None, name=None, clean=False, runway=None):
+    """Phase 1 complete : cleanup du sas TAF + run() TAF + organise en output/scenarios/<batch>/.
 
-    Wrapper haut-niveau de run() : nettoie le dossier temporaire output/,
+    Wrapper haut-niveau de run() : nettoie le sas temporaire (output/taf/),
     lance la generation TAF, puis reorganise les .yaml + poses vers
-    scenarios/<batch>/<scenario_name>/ (+ .esp GES).
+    output/scenarios/<batch>/<scenario_name>/ (+ .esp GES).
 
     :param name: nom optionnel du batch (genere `<name>__<timestamp>/`
                  au lieu de `default__<timestamp>/`)
-    :param clean: si True, vide scenarios/ avant la generation
+    :param clean: si True, vide output/scenarios/ avant la generation
     :param runway: force toutes les generations sur une piste (format ICAO_RWY)
-    :return: list[Path] des dossiers scenarios/<batch>/<scenario_name>/ crees
+    :return: list[Path] des dossiers output/scenarios/<batch>/<scenario_name>/ crees
     """
     print("=" * 60)
     print(" PHASE 1 : Generation TAF")
@@ -229,8 +246,10 @@ def generate_runs(nb_scenarios=None, name=None, clean=False, runway=None):
 
     ts = timestamp_now()
     batch_dir = new_batch_dir(name, timestamp=ts)
-    print(f"[Pipeline] Batch : {batch_dir.name}/")
+    print(f"[Generate] Batch : {batch_dir.name}/")
 
+    # Ne vise QUE le sas (output/taf) : output/scenarios et output/data, ses
+    # voisins, doivent survivre a un generate en boucle.
     if TAF_OUTPUT_DIR.exists():
         shutil.rmtree(TAF_OUTPUT_DIR)
 
@@ -255,10 +274,10 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default=None,
                         help="Nom de la generation (sinon 'generation')")
     parser.add_argument("--clean", action="store_true",
-                        help="Vider scenarios/ avant la generation")
+                        help="Vider output/scenarios/ avant la generation")
     parser.add_argument("--runway", type=str, default=None,
                         help="Forcer une piste (format ICAO_RWY, ex LFPO_24)")
     args = parser.parse_args()
 
-    generate_runs(nb_scenarios=args.nb_scenarios,
-                  name=args.name, clean=args.clean, runway=args.runway)
+    generate_scenarios(nb_scenarios=args.nb_scenarios,
+                       name=args.name, clean=args.clean, runway=args.runway)

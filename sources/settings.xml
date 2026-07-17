@@ -6,8 +6,8 @@
 
   
 
-  <parameter name="experiment_path" type="path" value="../" />
-  <parameter name="experiment_folder_name" type="folder" value="output" />
+  <parameter name="experiment_path" type="path" value="../output/" />
+  <parameter name="experiment_folder_name" type="folder" value="taf" />
 
 
   <parameter name="nb_test_cases" type="integer" value="1" />

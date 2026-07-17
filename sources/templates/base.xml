@@ -97,12 +97,12 @@
 
             <!-- Precipitation : 0 = pas de pluie/neige.
                  Necessite un cloud_type >= 0 : pas de nuage = pas de source. -->
-            <parameter name="precip_rate"             type="real" min="1"   max="1"/>
+            <parameter name="precip_rate"             type="real" min="0"   max="1"/>
 
             <!-- cloud_type :
                   -1 = pas de nuages manuels (avec precip=0 -> ciel degage)
                    0 = Cirrus, 1 = Stratus, 2 = Cumulus, 3 = Cumulonimbus -->
-            <parameter name="cloud_type"              type="integer" min="2"    max="2"/>
+            <parameter name="cloud_type"              type="integer" min="-1"    max="-1"/>
             <parameter name="cloud_coverage"          type="real" min="1"     max="1"/>  <!-- Taux de couverture nuageuse : 0=degage, 1=couvert -->
 
             <!-- Epaisseur du nuage (alt_top = alt_base + thickness)
@@ -111,7 +111,7 @@
             <parameter name="cloud_thickness_m"       type="real" min="500"  max="3000"/>
 
             <!-- Visibilite (m) -->
-            <parameter name="fog_visibility"          type="real" min="30000" max="30000"/>
+            <parameter name="fog_visibility"          type="real" min="40000" max="40000"/>
 
             <!-- Temperature (°C) : pluie vs neige -->
             <parameter name="temperature_c"           type="real" min="-15"   max="45"/>
@@ -119,7 +119,7 @@
             <!-- Taille gouttes (visuel uniquement, dataref privé XP12, susceptible
                  d'être cassé dans de futures versions).
                  1.0=defaut, 0.1=fines, 5.0=grosses. Ignore si precip=0. -->
-            <parameter name="rain_scale"              type="real" min="5"     max="5"/>
+            <parameter name="rain_scale"              type="real" min="0"     max="5"/>
   
             <!-- Marge nuages (m) au-dessus de l'avion pour la base nuages -->
             <parameter name="cloud_margin_m"          type="real" min="500"  max="1500"/>
@@ -328,9 +328,9 @@
                 <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
             </node>
             <node name="fog">
-                <parameter name="severity"     type="real" min="0.3"   max="0.7"/>
-                <parameter name="start_pct"    type="real" min="20"   max="40"/>
-                <parameter name="duration_pct" type="real" min="20" max="100"/>
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
                 <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
             </node>
             <!-- Neige (albumentations.RandomSnow methode bleach) : blanchiment HLS

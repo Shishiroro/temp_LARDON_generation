@@ -7,7 +7,8 @@ settings.xml).
 
 Resolution, pour chaque chemin :
     1. Fichier de config local `paths.local.json` a la racine du projet
-    2. Valeur par defaut (LARD / taf clones a la racine ; xplane vide)
+    2. Valeur par defaut (LARD / taf clones a la racine ; xplane vide ;
+       sorties dans output/)
 
 LARD et TAF peuvent etre N'IMPORTE OU sur la machine : indiquer leur chemin
 (absolu) dans paths.local.json. Voir paths.local.json.example.
@@ -64,3 +65,13 @@ TAF_SRC = TAF_ROOT / "src"
 
 # X-Plane : chaine vide par defaut (sert uniquement a localiser le plugin meteo).
 XPLANE_DIR = str(_FILE_CFG.get("xplane_dir") or "").strip()
+
+# --- Sortie ---
+# Racine de TOUTES les sorties : output/{scenarios,data,taf} (cf scenario.py).
+# Seule la racine est configurable ; les trois sous-dossiers sont figes.
+#
+# _resolve() est ici une necessite, pas un confort : taf_generate.run() fait un
+# os.chdir(sources/) qui n'est JAMAIS restaure, donc un chemin relatif pris tel
+# quel designerait deux dossiers differents selon que TAF a tourne ou non.
+# _resolve l'ancre sur PROJECT_ROOT a l'import, avant tout chdir.
+OUTPUT_DIR = _resolve("output_dir", PROJECT_ROOT / "output")

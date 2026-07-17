@@ -1,22 +1,25 @@
 """
-scenario.py — Cycle de vie des scenarios (generate) et datasets (export)
+scenario.py — Cycle de vie des scenarios (generate) et datasets (render)
 ========================================================================
-Deux arbres de sortie distincts :
+Toutes les sorties vivent sous UNE racine (config.OUTPUT_DIR, configurable via
+la cle `output_dir` de paths.local.json ; defaut : output/) :
 
-  scenarios/<batch>/<scenario_name>/            (produit par 'generate')
+  output/scenarios/<batch>/<scenario_name>/     (produit par 'generate')
       <scenario_name>.yaml                      scenario LARD (TAF)
       <scenario_name>.json                      poses camera
       <scenario_name>.esp                       projet GES
       [fault_profile.json]                      si fautes actives
       [weather_profile.json]                    si meteo active
 
-  dataset/<simulator>/                                    (produit par 'export')
+  output/data/<simulator>/                                (produit par 'render')
       metadata.csv                              GT consolidee (tous scenarios du simulateur)
       <airport_runway>/<scenario_name>/
-          images/                               rendu simulateur
-          corrupted_images/                     images + fautes capteur
+          footage/                              rendu simulateur (nom impose par LARD)
+          corrupted_footage/                    images + fautes capteur
           labels_lard.csv                       GT LARD brute (toutes pistes)
           metadata.csv                          GT enrichie (ce scenario)
+
+  output/taf/                                   sas TAF, jetable (cf taf_generate)
 
 Conventions de nommage :
   <batch>          = <default|nom>__<timestamp>
@@ -24,8 +27,9 @@ Conventions de nommage :
   <airport_runway> = <airport>_<runway>   (ex: KPDX_10L)
   <simulator>      in {xplane, GES}
 
-Ce module ne fait QUE la structure/nommage/resolution (pas d'orchestration
-ni d'import de taf_export/taf_generate) : l'orchestration vit dans pipeline.py.
+Ce module ne fait QUE la structure/nommage/resolution : pas d'orchestration, et
+surtout aucun import de taf_export/taf_generate (ils importent scenario, l'inverse
+creerait un cycle). L'orchestration vit dans render.py et main.py.
 """
 
 import json
@@ -35,14 +39,44 @@ from pathlib import Path
 
 import yaml
 
+from config import OUTPUT_DIR
+
 # --- Chemins ---
+# Seule la racine (OUTPUT_DIR) est configurable ; ces trois noms sont figes.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SCENARIOS_DIR = PROJECT_ROOT / "scenarios"      # sortie 'generate'
-DATASET_DIR = PROJECT_ROOT / "dataset"          # sortie 'export'
-TAF_OUTPUT_DIR = PROJECT_ROOT / "output"        # dossier temporaire TAF
+SCENARIOS_DIR = OUTPUT_DIR / "scenarios"        # sortie 'generate' (Phase 1)
+DATASET_DIR = OUTPUT_DIR / "data"               # sortie 'render'   (Phase 2)
+TAF_OUTPUT_DIR = OUTPUT_DIR / "taf"             # sas temporaire TAF (rmtree a chaque generate)
 
 IMAGE_EXTS = (".jpeg", ".jpg", ".png")
 SUPPORTED_SIMULATORS = ("xplane", "GES")
+
+# Nom du dossier des images rendues. **NE PAS RENOMMER** : LARD lit ses images
+# dans `<export_dir>/footage/` (chemin EN DUR, LARD/src/labeling/label_export.py).
+# Si le dossier porte un autre nom, LARD ne les trouve pas, passe en
+# `with_images=False` et laisse la colonne `image` VIDE : la GT ne peut alors plus
+# etre jointe par nom et retombe sur un alignement par index (metadata.py), qui
+# peut associer la geometrie d'une frame a une AUTRE image, en silence.
+# Avec `footage/`, LARD verifie lui-meme poses == images et LEVE une exception
+# (label_export.py: "Number of images in footage DOES NOT match poses in .yaml").
+RENDER_DIRNAME = "footage"
+
+# Images + fautes capteur. Ce nom-la est LIBRE (LARD ne le lit jamais, la GT est
+# calculee sur les images propres) : il suit `footage/` par coherence, rien de plus.
+CORRUPTED_DIRNAME = "corrupted_footage"
+
+
+def display_path(path):
+    """Chemin raccourci pour l'affichage, absolu si hors du projet.
+
+    OUTPUT_DIR peut pointer n'importe ou (paths.local.json) : un relative_to
+    (PROJECT_ROOT) leverait alors ValueError. Purement cosmetique.
+    """
+    path = Path(path)
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
 
 
 # ===========================================================================
@@ -104,11 +138,11 @@ def dataset_scenario_dir(simulator, scenario_name):
 
 
 def pick_image_source(dataset_dir):
-    """corrupted_images/ si non vide, sinon images/."""
+    """corrupted_footage/ si non vide, sinon footage/ (images rendues)."""
     d = Path(dataset_dir)
-    if list_images(d / "corrupted_images"):
-        return d / "corrupted_images"
-    return d / "images"
+    if list_images(d / CORRUPTED_DIRNAME):
+        return d / CORRUPTED_DIRNAME
+    return d / RENDER_DIRNAME
 
 
 # ===========================================================================
@@ -165,7 +199,7 @@ def find_scenarios(name=None, all_scenarios=False, batch=None):
                 if len(matches) > 1:
                     print(f"[ERREUR] '{name}' trouve dans plusieurs batchs :")
                     for m in matches:
-                        print(f"  - {m.relative_to(PROJECT_ROOT)}")
+                        print(f"  - {display_path(m)}")
                     print("  Specifier --batch ou le chemin compose '<batch>/<scenario>'.")
                     return []
                 candidates = matches
@@ -227,7 +261,7 @@ def create_scenarios_from_taf_output(batch_dir, timestamp):
       - <scenario_name>.json   (ex poses_cam_export.json, scenario_name patche)
       - fault_profile.json / weather_profile.json (si presents)
 
-    Le .esp (GES) est genere ensuite par taf_generate.generate_runs (via LARD).
+    Le .esp (GES) est genere ensuite par taf_generate.generate_scenarios (via LARD).
 
     :return: list[Path] des dossiers scenarios crees
     """
@@ -262,13 +296,12 @@ def create_scenarios_from_taf_output(batch_dir, timestamp):
                 extras += f" + {extra}"
 
         created.append(sdir)
-        rel = sdir.relative_to(PROJECT_ROOT)
-        print(f"  [SCEN] {rel}/ <- .yaml + .json{extras}")
+        print(f"  [SCEN] {display_path(sdir)}/ <- .yaml + .json{extras}")
 
-    print(f"\n[Pipeline] {len(created)} scenario(s) dans "
-          f"{batch_dir.relative_to(PROJECT_ROOT)}/")
+    print(f"\n[Generate] {len(created)} scenario(s) dans "
+          f"{display_path(batch_dir)}/")
     return created
 
 
-# Orchestration (render_scenarios / full_pipeline) : voir pipeline.py
-# (module separe pour eviter le cycle d'imports scenario <-> taf_export/taf_generate).
+# Orchestration : generate -> taf_generate.generate_scenarios ; rendu -> render.py.
+# Rien de tout cela ici : ces modules importent scenario, l'inverse creerait un cycle.

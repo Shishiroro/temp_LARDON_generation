@@ -6,7 +6,7 @@ LARD (passthrough) + colonnes derivees (scenario, airport, runway, time,
 time_fps, weather, image). Produit/mis a jour a chaque export.
 
 Le metadata.csv est ecrit dans dataset/<sim>/<airport_runway>/<scenario>/ et
-son chemin `image` est relatif au scenario ("images/<fichier>").
+son chemin `image` est relatif au scenario ("footage/<fichier>").
 """
 
 import csv
@@ -14,7 +14,12 @@ import json
 import re
 from pathlib import Path
 
-from scenario import list_images, airport_runway_from_scenario, DATASET_DIR
+from scenario import (
+    DATASET_DIR,
+    RENDER_DIRNAME,
+    airport_runway_from_scenario,
+    list_images,
+)
 from runway_utils import reciprocal_runway
 
 # Colonnes du metadata.csv — alignees sur l'ancien build_dataset / CSV LARD.
@@ -131,7 +136,7 @@ def build_metadata_csv(scenario_dir, images_dir, gt_csv, simulator, out_csv):
     """Ecrit metadata.csv (schema META_COLS) : GT LARD + colonnes derivees.
 
     :param scenario_dir: scenarios/<batch>/<scenario_name>/ (yaml/json/profils)
-    :param images_dir:   dataset .../images/
+    :param images_dir:   dataset .../footage/
     :param gt_csv:       CSV GT LARD brut (produit par lard_bridge)
     :param simulator:    'xplane' | 'GES' (colonne 'type')
     :param out_csv:      chemin du metadata.csv a ecrire
@@ -148,12 +153,23 @@ def build_metadata_csv(scenario_dir, images_dir, gt_csv, simulator, out_csv):
 
     images = list_images(images_dir)
 
-    # Association frame -> ligne GT. LARD ecrit une ligne par frame (apres
-    # filtrage sur la piste), dans l'ordre des poses = ordre des frames.
-    # Si LARD a rempli la colonne 'image' (images trouvees dans footage/), on
-    # matche par nom ; sinon (mode with_images=False) on aligne par index.
+    # Association frame -> ligne GT, PAR NOM D'IMAGE (cas nominal).
+    # LARD remplit la colonne 'image' des lors qu'il trouve les images dans
+    # `<export_dir>/footage/` (cf scenario.RENDER_DIRNAME) : c'est le cas, et il
+    # verifie lui-meme poses == images (il leve sinon). Une piste et son opposee
+    # ne peuvent pas etre toutes deux face a l'avion (runway_is_facing_us), donc
+    # apres filtrage il y a exactement 1 ligne par frame, a nom unique.
+    #
+    # L'alignement par INDEX ci-dessous n'est qu'un filet : il ne se declenche que
+    # si 'image' est vide (dossier de rendu mal nomme -> with_images=False). Il est
+    # FRAGILE (il peut attacher la geometrie d'une frame a une AUTRE image) : si
+    # l'avertissement apparait, c'est un BUG a corriger, pas un mode de marche.
     by_name = {Path(r["image"]).name: r for r in lard_rows if r.get("image", "").strip()}
     use_names = len(by_name) == len(lard_rows) and lard_rows
+    if not use_names:
+        print(f"  [metadata] ATTENTION : colonne 'image' vide dans la GT LARD "
+              f"-> repli sur l'alignement par index (fragile). Le dossier de rendu "
+              f"doit s'appeler '{RENDER_DIRNAME}/' pour que LARD trouve les images.")
     if len(lard_rows) != len(images):
         print(f"  [metadata] ATTENTION : {len(lard_rows)} lignes GT (piste "
               f"{runway_def}) pour {len(images)} images — jointure best-effort")
@@ -175,7 +191,7 @@ def build_metadata_csv(scenario_dir, images_dir, gt_csv, simulator, out_csv):
         base["time"] = _format_time(lard.get("time", ""), time_of_day)
         base["time_fps"] = _format_time_fps(lard.get("time", ""))
         base["weather"] = weather
-        base["image"] = f"images/{img.name}"
+        base["image"] = f"{RENDER_DIRNAME}/{img.name}"
         rows.append(base)
 
     with open(out_csv, "w", newline="") as f:
@@ -191,7 +207,7 @@ def build_simulator_metadata(simulator):
     de tous les scenarios rendus avec ce simulateur.
 
     Le chemin `image` est reecrit relativement au dossier <simulator>/ :
-        images/<fichier>  ->  <airport_runway>/<scenario>/images/<fichier>
+        footage/<fichier>  ->  <airport_runway>/<scenario>/footage/<fichier>
     Reconstruit integralement a chaque appel (idempotent) : appele a la fin de
     chaque session d'export pour tenir le CSV consolide a jour.
 

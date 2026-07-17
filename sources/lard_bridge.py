@@ -260,8 +260,9 @@ def generate_labels_csv(yaml_path, out_dir, images_dir, csv_name="metadata.csv")
     A appeler APRES avoir recupere les images du simulateur.
 
     :param yaml_path: chemin vers le .yaml du scenario
-    :param out_dir: dossier de sortie du CSV (dataset .../<scenario>/)
-    :param images_dir: dossier contenant les images (dataset .../images/)
+    :param out_dir: dossier de sortie du CSV (dataset .../<scenario>/). LARD y
+                    cherche les images dans `footage/` (chemin EN DUR chez lui).
+    :param images_dir: dossier contenant les images (dataset .../footage/)
     :param csv_name: nom du fichier CSV (defaut: metadata.csv)
     """
     yaml_path = Path(yaml_path).resolve()
@@ -271,11 +272,11 @@ def generate_labels_csv(yaml_path, out_dir, images_dir, csv_name="metadata.csv")
 
     csv_file = out_dir / csv_name
 
-    # LARD recopie les images dans `out_images_dir` avant de generer le CSV.
-    # On pointe out_images_dir sur images/ (images deja presentes) et on
-    # monkey-patch shutil dans label_export pour qu'une copie src->dst
-    # identique soit un no-op au lieu d'une SameFileError. Patch local,
-    # restaure dans le finally en sortie.
+    # LARD LIT ses images dans `export_dir/footage/` (en dur) et les RECOPIE vers
+    # `out_images_dir` (le chemin qu'il inscrit dans la colonne `image` du CSV).
+    # On pointe out_images_dir sur footage/ lui-meme : src == dst, et le
+    # monkey-patch ci-dessous rend la copie no-op au lieu d'une SameFileError
+    # -> aucune duplication des images. Patch local, restaure dans le finally.
     import src.labeling.label_export as _le
     import shutil as _real_shutil
 
@@ -320,7 +321,7 @@ def generate_gt_csv(scenario_dir, out_dir, images_dir):
 
     :param scenario_dir: dossier scenarios/<batch>/<scenario_name>/ (contient le .yaml)
     :param out_dir: dossier dataset .../<scenario_name>/ (sortie du CSV)
-    :param images_dir: dossier des images (dataset .../images/)
+    :param images_dir: dossier des images (dataset .../footage/)
     :return: Path du CSV GT brut
     """
     scenario_dir = Path(scenario_dir)

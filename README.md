@@ -312,8 +312,8 @@ dataset/                                sortie de 'export' (Phase 2)
 └── <simulator>/                        xplane | GES
     └── <airport_runway>/               ex: KPDX_10L
         └── <scenario_name>/
-            ├── images/                 rendu simulateur
-            ├── corrupted_images/       images + fautes capteur (si actives)
+            ├── footage/                rendu simulateur (nom imposé par LARD)
+            ├── corrupted_footage/      images + fautes capteur (si actives)
             └── metadata.csv            vérité terrain LARD (GT)
 ```
 

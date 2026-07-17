@@ -1,5 +1,6 @@
 {
   "lard_dir": "C:/chemin/vers/LARD",
   "taf_dir": "C:/chemin/vers/taf",
-  "xplane_dir": "C:/X-Plane 12"
+  "xplane_dir": "C:/X-Plane 12",
+  "output_dir": "output"
 }

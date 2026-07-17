@@ -27,7 +27,7 @@ Conversion appliquee dans _convert_pose : xplane_pitch = pitch_stocke - 90.
 Usage :
     from xplane_bridge import render_scenario, XPlaneConfig
     config = XPlaneConfig(xplane_dir="C:/X-Plane 12")
-    render_scenario("scenario.json", "images/", config)
+    render_scenario("scenario.json", "footage/", config)
 """
 
 import struct
@@ -677,7 +677,7 @@ def render_scenario(poses_path, output_dir, config=None, weather_profile_path=No
     capture la fenetre via mss, et sauve les images en JPEG.
 
     :param poses_path: chemin vers le fichier de poses JSON
-    :param output_dir: dossier de sortie pour les images (dataset .../images/)
+    :param output_dir: dossier de sortie pour les images (dataset .../footage/)
     :param config: XPlaneConfig (optionnel)
     :param weather_profile_path: chemin vers weather_profile.json (optionnel)
     :return: Path du dossier de sortie
@@ -814,7 +814,7 @@ def render_xplane_scenario(poses_json, out_images_dir, xplane_dir, weather_json=
     out_images_dir. Skip si out_images_dir contient deja des images.
 
     :param poses_json: chemin du <scenario>.json (poses camera)
-    :param out_images_dir: dossier de sortie des images (dataset .../images/)
+    :param out_images_dir: dossier de sortie des images (dataset .../footage/)
     :param xplane_dir: chemin du repertoire X-Plane 12
     :param weather_json: chemin weather_profile.json (optionnel)
     :return: True si les images ont ete rendues (ou existaient deja), False sinon
@@ -828,7 +828,7 @@ def render_xplane_scenario(poses_json, out_images_dir, xplane_dir, weather_json=
 
     imgs = list_images(out_images_dir)
     if imgs:
-        print(f"  [XPLANE] images/ existe deja ({len(imgs)} images), skip rendu")
+        print(f"  [XPLANE] {out_images_dir.name}/ existe deja ({len(imgs)} images), skip rendu")
         return True
 
     print(f"\n  [XPLANE] Rendu de {poses_json.stem}...")

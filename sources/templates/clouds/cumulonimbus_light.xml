@@ -76,12 +76,18 @@
              METEO X-Plane 12 (per-scenario, injectee 1x avant rendu)
              ===========================================================
              COMPORTEMENT :
-               - Pluie seule    (precip > 0, cloud_type = -1) : Cumulonimbus auto
                - Nuages seuls   (cloud_type >= 0, precip = 0) : nuages manuels
                - Pluie + nuages (precip > 0, cloud_type >= 0) : nuages manuels
+               - Pluie seule    (precip > 0, cloud_type = -1) : PAS de pluie
+                   (pas de nuage = pas de source). Choisir un genre.
                - Rien           (precip = 0, cloud_type = -1) : pas d'injection
 
-             cloud_type enum : 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus, -1=auto
+             Le genre de nuage n'est JAMAIS impose par le code : il vient d'ici.
+             (Un Cumulonimbus etait force quand precip > 0 et cloud_type = -1 ;
+             retire — cf. XP 12.4.1 "reduce unwanted CB".)
+
+             cloud_type enum : 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus,
+                               -1 = aucun nuage manuel
 
              Ce fichier (base.xml) garde des valeurs meteo de base.
              Les variantes de profil (brouillard, nuages, pluie, neige, clair)
@@ -323,9 +329,9 @@
                 <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
             </node>
             <node name="fog">
-                <parameter name="severity"     type="real" min="0.3"   max="0.7"/>
-                <parameter name="start_pct"    type="real" min="20"   max="40"/>
-                <parameter name="duration_pct" type="real" min="20" max="100"/>
+                <parameter name="severity"     type="real" min="0"   max="0"/>
+                <parameter name="start_pct"    type="real" min="0"   max="0"/>
+                <parameter name="duration_pct" type="real" min="100" max="100"/>
                 <constraint name="bounded" expressions=".\start_pct + .\duration_pct INFEQ 100"/>
             </node>
             <!-- Neige (albumentations.RandomSnow methode bleach) : blanchiment HLS

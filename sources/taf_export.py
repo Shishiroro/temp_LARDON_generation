@@ -1,21 +1,19 @@
 """
-taf_export.py — Point d'entree TAF + Phase 2 (generation d'images + GT)
-====================================================================
-Deux fonctions independantes hebergees dans le meme fichier :
+taf_export.py — Point d'entree TAF (Phase 1 uniquement)
+=======================================================
+Ce fichier est le POINT D'EXTENSION de TAF : taf_generate.run() le copie en
+taf/src/Export.py et en sources/Export.py, et taf/src/Tree.py y lie export()
+AU CHARGEMENT (`from Export import export`, pendant `import Taf`).
 
-  1. export(root_node, path)
-     Callback TAF appele pendant la generation z3. Ecrit .yaml + JSON
-     configs dans output/test_artifact_X (temporaire).
+  export(root_node, path)
+      Callback appele par z3 une fois par test case. Lit les parametres du
+      scenario, calcule la trajectoire, et ecrit dans `path` (sas TAF,
+      output/taf/...) : .yaml + poses camera + profils fautes/meteo.
 
-  2. render_scenario_run(scenario_dir, simulator, xplane_dir)
-     Orchestrateur Phase 2 appele par main.py / scenario.py sur chaque
-     scenario. Seul point d'entree pour produire un dataset :
-       rendu -> fautes -> GT  (images/, corrupted_images/, metadata.csv)
-     TAF n'invoque jamais cette fonction.
+Chaine : root_node -> TrajectoryConfig -> build_trajectory -> .yaml + poses
 
-Chaine TAF : root_node -> TrajectoryConfig -> build_trajectory -> .yaml
-Chaine pipeline : scenario_dir -> render(images/) -> fautes(corrupted_images/)
-                  -> GT(metadata.csv)
+La Phase 2 (rendu, fautes, GT) vit dans render.py : TAF ne l'appelle jamais et
+les deux moities ne partageaient aucun symbole.
 """
 
 import math
@@ -27,14 +25,13 @@ from trajectory_builder import (
     OUParams,
     build_trajectory
 )
-from lard_bridge import get_runway_geometry, export_scenario, generate_gt_csv
-from xplane_bridge import save_poses_json, render_xplane_scenario
+from lard_bridge import get_runway_geometry, export_scenario
+from xplane_bridge import save_poses_json
 from sensor_faults import (
     FaultConfig,
     KNOWN_FAULT_TYPES,
     validate_faults,
     save_fault_profile,
-    apply_faults,
 )
 from xplane_weather import (
     WeatherConfig,
@@ -42,8 +39,6 @@ from xplane_weather import (
     has_weather,
     save_weather_profile,
 )
-from scenario import list_images, dataset_scenario_dir, PROJECT_ROOT
-from metadata import build_metadata_csv
 
  
 def _read_param(node, name):
@@ -242,116 +237,3 @@ def export(root_node, path):
             output_path=Path(path) / "weather_profile.json",
         )
 
-
-# ===========================================================================
-# Phase 2 : Rendu + fautes + GT (post-TAF, par scenario)
-# ---------------------------------------------------------------------------
-# Appelees apres 'generate' (scenarios/<batch>/<scenario_name>/). TAF n'utilise
-# QUE export() ci-dessus. render_scenario_run est le SEUL point d'entree pour
-# produire un dataset : dataset/<simulator>/<airport_runway>/<scenario_name>/
-#   images/            (rendu simulateur)
-#   corrupted_images/  (images + fautes capteur)
-#   metadata.csv       (verite terrain LARD)
-# ===========================================================================
-
-def step_render_xplane(scenario_dir, images_dir, xplane_dir):
-    """Rendu X-Plane 12 du scenario -> images_dir (meteo injectee si profil).
-
-    :return: True si images presentes apres rendu, False sinon
-    """
-    scenario_dir = Path(scenario_dir)
-    name = scenario_dir.name
-    poses_json = scenario_dir / f"{name}.json"
-    weather_json = scenario_dir / "weather_profile.json"
-
-    ok = render_xplane_scenario(
-        poses_json, images_dir, xplane_dir or "",
-        weather_json=weather_json if weather_json.exists() else None,
-    )
-    if not ok:
-        print(f"  [Image] Echec rendu X-Plane pour {name}")
-        return False
-    if not list_images(images_dir):
-        print(f"  [Image] Pas d'images dans images/ pour {name}")
-        return False
-    return True
-
-
-def step_faults(images_dir, corrupted_dir, scenario_dir):
-    """Applique les fautes capteur si fault_profile.json present (no-op sinon).
-
-    images_dir -> corrupted_dir. Les exceptions sont logees mais ne bloquent
-    pas le pipeline (les fautes sont optionnelles).
-    """
-    fault_json = Path(scenario_dir) / "fault_profile.json"
-    try:
-        apply_faults(images_dir, corrupted_dir, fault_json)
-    except Exception as e:
-        print(f"  [Image] FAULTS ERREUR : {e}")
-
-
-def step_ground_truth(scenario_dir, dataset_dir, images_dir, simulator):
-    """Genere labels_lard.csv (GT LARD brute) puis metadata.csv (enrichi).
-
-    Pure geometrie (offline), mais necessite images_dir (LARD parcourt les
-    images). Skip si metadata.csv existe deja (idempotent).
-
-    :return: True si metadata.csv present apres l'etape, False sinon
-    """
-    dataset_dir = Path(dataset_dir)
-    if (dataset_dir / "metadata.csv").exists():
-        print(f"  [Image] metadata.csv deja present, skip")
-        return True
-    try:
-        gt = generate_gt_csv(scenario_dir, out_dir=dataset_dir, images_dir=images_dir)
-        build_metadata_csv(scenario_dir, images_dir, gt, simulator,
-                           out_csv=dataset_dir / "metadata.csv")
-    except Exception as e:
-        print(f"  [Image] GT ERREUR : {e}")
-        return (dataset_dir / "metadata.csv").exists()
-    return True
-
-
-def render_scenario_run(scenario_dir, simulator="xplane", xplane_dir=None):
-    """Phase 2 pour un scenario -> dataset/<simulator>/<airport_runway>/<name>/.
-
-    Enchaine :
-      1. rendu simulateur -> images/           (xplane ; GES = externe)
-      2. fautes capteur   -> corrupted_images/ (si fault_profile.json)
-      3. verite terrain   -> metadata.csv      (GT LARD)
-
-    :param scenario_dir: dossier scenarios/<batch>/<scenario_name>/
-    :param simulator: 'xplane' (rendu integre) ou 'GES' (rendu externe)
-    :param xplane_dir: chemin vers X-Plane 12 (mode xplane)
-    :return: Path du dataset dir si succes, None sinon
-    """
-    scenario_dir = Path(scenario_dir)
-    name = scenario_dir.name
-    dataset_dir = dataset_scenario_dir(simulator, name)
-    images_dir = dataset_dir / "images"
-    corrupted_dir = dataset_dir / "corrupted_images"
-
-    try:
-        rel = dataset_dir.relative_to(PROJECT_ROOT)
-    except ValueError:
-        rel = dataset_dir
-    print(f"\n  [Image] {name} -> {rel}/  [sim={simulator}]")
-
-    if simulator == "xplane":
-        if not step_render_xplane(scenario_dir, images_dir, xplane_dir):
-            return None
-    elif simulator == "GES":
-        # Rendu GES externe : on ne produit que le .esp (a l'etape generate).
-        # On attend que les images rendues par GES soient deposees dans images/.
-        images_dir.mkdir(parents=True, exist_ok=True)
-        if not list_images(images_dir):
-            print(f"  [Image] GES : rendu externe. Deposez les images dans "
-                  f"{images_dir} puis relancez l'export pour fautes + GT.")
-            return None
-    else:
-        print(f"  [Image] Simulateur inconnu : {simulator} (attendu: xplane, GES)")
-        return None
-
-    step_faults(images_dir, corrupted_dir, scenario_dir)
-    step_ground_truth(scenario_dir, dataset_dir, images_dir, simulator)
-    return dataset_dir

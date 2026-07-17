@@ -1,10 +1,12 @@
 """
-main.py — CLI orchestrateur LARD-LAAS-TAF (usine de generation/export)
-======================================================================
-Entry point CLI minimal. Toute la logique vit dans :
-  - Phase 1 (generate) : sources/taf_generate.generate_runs
-  - Phase 2 (export)   : sources/taf_export.render_scenario_run
-  - Modes batch usine  : sources/scenario.render_scenarios / full_pipeline
+main.py — CLI orchestrateur LARDON (usine de generation/rendu)
+==============================================================
+Entry point CLI minimal, sans logique propre. Les deux phases vivent dans :
+  - Phase 1 (generate) : sources/taf_generate.generate_scenarios
+  - Phase 2 (render)   : sources/render.render_scenarios
+
+Le mode 'full' n'est que l'enchainement des deux : il ne merite pas de module
+d'orchestration dedie.
 
 L'evaluation (YOLO/IoU) a ete extraite dans un projet separe : ce depot ne
 contient plus que l'usine a donnees (generation + rendu + verite terrain).
@@ -12,8 +14,8 @@ contient plus que l'usine a donnees (generation + rendu + verite terrain).
 Modes :
     python main.py generate -n 5
     python main.py generate -n 100 --name pluie --clean
-    python main.py export <batch>/<scenario> --xplane-dir "C:/X-Plane 12"
-    python main.py export --all --batch pluie__20260714-153012 --simulator xplane
+    python main.py render <batch>/<scenario> --xplane-dir "C:/X-Plane 12"
+    python main.py render --all --batch pluie__20260714-153012 --simulator xplane
     python main.py full -n 100 --name pluie --xplane-dir "C:/X-Plane 12"
 """
 
@@ -26,9 +28,9 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "sources"))
 
 from config import XPLANE_DIR
-from taf_generate import generate_runs
+from taf_generate import generate_scenarios
 from scenario import SUPPORTED_SIMULATORS
-from pipeline import render_scenarios, full_pipeline
+from render import render_scenarios
 
 
 def _add_generate_args(parser):
@@ -36,17 +38,17 @@ def _add_generate_args(parser):
     parser.add_argument("-n", "--nb-scenarios", type=int, default=None,
                         help="Nombre de scenarios (surcharge settings.xml)")
     parser.add_argument("--name", type=str, default=None,
-                        help="Nom du batch (cree scenarios/<name>__<timestamp>/ "
-                             "au lieu de scenarios/default__<timestamp>/)")
+                        help="Nom du batch (cree output/scenarios/<name>__<timestamp>/ "
+                             "au lieu de output/scenarios/default__<timestamp>/)")
     parser.add_argument("--clean", action="store_true",
-                        help="Vider scenarios/ avant la generation")
+                        help="Vider output/scenarios/ avant la generation")
     parser.add_argument("--runway", type=str, default=None,
                         help="Forcer toutes les generations sur une piste "
                              "(format ICAO_RWY, ex LFPO_24)")
 
 
-def _add_export_args(parser):
-    """Args de ciblage des scenarios pour 'export'."""
+def _add_render_args(parser):
+    """Args de ciblage des scenarios pour 'render'."""
     parser.add_argument("scenario", nargs="?", default=None,
                         help="Scenario a rendre, format '<batch>/<scenario_name>' "
                              "ou nom seul si --batch est fourni")
@@ -64,22 +66,24 @@ def _add_simulator_arg(parser):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pipeline generation/export LARD-LAAS-TAF (X-Plane 12 / GES)",
+        description="Pipeline generation/rendu LARDON (X-Plane 12 / GES)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Structure de sortie :
-  scenarios/<batch>/<scenario_name>/        <- 'generate' (Phase 1)
+Structure de sortie (racine configurable : cle 'output_dir' de paths.local.json) :
+  output/scenarios/<batch>/<scenario_name>/ <- 'generate' (Phase 1)
     <scenario_name>.yaml                    <- scenario LARD (TAF)
     <scenario_name>.json                    <- poses camera
     <scenario_name>.esp                     <- projet GES (best-effort)
     [fault_profile.json / weather_profile.json]
 
-  dataset/<simulator>/                                    <- 'export' (Phase 2)
+  output/data/<simulator>/                                <- 'render' (Phase 2)
     metadata.csv                            <- GT consolidee (tous scenarios du simulateur)
     <airport_runway>/<scenario_name>/
-      images/                               <- rendu simulateur
-      corrupted_images/                     <- images + fautes capteur
+      footage/                              <- rendu simulateur (nom impose par LARD)
+      corrupted_footage/                    <- images + fautes capteur
       metadata.csv                          <- verite terrain LARD (ce scenario)
+
+  output/taf/                               <- sas TAF, jetable (vide a chaque generate)
 
   <batch>          = <default|nom>__<timestamp>
   <scenario_name>  = <airport>-<runway>__<nb_smpl>-smpl__<timestamp>__<indx>
@@ -93,13 +97,13 @@ Structure de sortie :
                              help=f"Repertoire X-Plane 12 (defaut: {XPLANE_DIR or '(non defini)'})")
 
     p_gen = sub.add_parser("generate",
-                           help="Phase 1 : genere les scenarios TAF dans scenarios/")
+                           help="Phase 1 : genere les scenarios TAF dans output/scenarios/")
     _add_generate_args(p_gen)
 
-    p_export = sub.add_parser("export", parents=[xplane_args],
-                              help="Phase 2 : rendu + fautes capteur + GT")
-    _add_export_args(p_export)
-    _add_simulator_arg(p_export)
+    p_render = sub.add_parser("render", parents=[xplane_args],
+                              help="Phase 2 : rendu + fautes capteur + GT dans output/data/")
+    _add_render_args(p_render)
+    _add_simulator_arg(p_render)
 
     p_full = sub.add_parser("full", parents=[xplane_args],
                             help="Phase 1 + 2 enchainees (generation + rendu)")
@@ -109,21 +113,21 @@ Structure de sortie :
     args = parser.parse_args()
 
     if args.mode == "generate":
-        created = generate_runs(nb_scenarios=args.nb_scenarios,
-                                name=args.name, clean=args.clean,
-                                runway=args.runway)
+        created = generate_scenarios(nb_scenarios=args.nb_scenarios,
+                                     name=args.name, clean=args.clean,
+                                     runway=args.runway)
         if created:
             batch = created[0].parent.name
-            print(f"  Prochaine etape : main.py export --all --batch {batch}")
+            print(f"  Prochaine etape : main.py render --all --batch {batch}")
 
-    elif args.mode == "export":
+    elif args.mode == "render":
         if not args.scenario and not args.all_scenarios:
-            print("Specifier un scenario ou --all. Ex: export <batch>/<scenario> "
-                  "ou export --all --batch <batch>")
+            print("Specifier un scenario ou --all. Ex: render <batch>/<scenario> "
+                  "ou render --all --batch <batch>")
             return
         if args.all_scenarios and not args.batch:
             print("[ERREUR] --all requiert --batch <nom>. "
-                  "Ex: export --all --batch pluie__20260714-153012")
+                  "Ex: render --all --batch pluie__20260714-153012")
             return
         render_scenarios(
             name=args.scenario, all_scenarios=args.all_scenarios,
@@ -132,9 +136,16 @@ Structure de sortie :
         )
 
     elif args.mode == "full":
-        full_pipeline(
-            nb_scenarios=args.nb_scenarios,
-            name=args.name, clean=args.clean, runway=args.runway,
+        # Les deux phases enchainees, sans module d'orchestration : le batch est
+        # horodate, donc cibler --batch ne rend que les scenarios qu'on vient de creer.
+        created = generate_scenarios(nb_scenarios=args.nb_scenarios,
+                                     name=args.name, clean=args.clean,
+                                     runway=args.runway)
+        if not created:
+            print("[Main] Aucun scenario genere, arret.")
+            return
+        render_scenarios(
+            all_scenarios=True, batch=created[0].parent.name,
             simulator=args.simulator, xplane_dir=args.xplane_dir,
         )
 

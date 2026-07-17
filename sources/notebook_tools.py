@@ -8,7 +8,7 @@ Helpers de visualisation / dataset au-dessus du NOUVEAU layout :
       [fault_profile.json / weather_profile.json]
 
   dataset/<simulator>/<airport_runway>/<scenario>/   (export)
-      images/ , corrupted_images/          rendu + fautes capteur
+      footage/ , corrupted_footage/        rendu + fautes capteur
       metadata.csv                         verite terrain LARD (1 ligne / image)
       labels_lard.csv                      GT LARD brute (toutes pistes visibles)
 
@@ -44,7 +44,7 @@ import yaml
 
 # --- Reutilisation du code usine (source unique de verite) ---
 from scenario import (
-    PROJECT_ROOT, DATASET_DIR,
+    PROJECT_ROOT, DATASET_DIR, RENDER_DIRNAME,
     find_scenarios, list_images, pick_image_source,
     dataset_scenario_dir, airport_runway_from_scenario,
 )
@@ -76,13 +76,13 @@ def _iter_run_datasets(run_name=None, all_runs=None, simulator="xplane"):
     """Itere (scenario_dir, dataset_dir) pour les scenarios cibles rendus.
 
     all_runs par defaut = (run_name is None). Ne garde que les scenarios dont
-    le dataset possede un dossier images/ (donc reellement rendus).
+    le dataset possede un dossier footage/ (donc reellement rendus).
     """
     if all_runs is None:
         all_runs = run_name is None
     for scen in find_runs(run_name=run_name, all_runs=all_runs):
         ds = _dataset_dir(scen, simulator)
-        if (ds / "images").exists():
+        if (ds / RENDER_DIRNAME).exists():
             yield scen, ds
 
 
@@ -146,7 +146,7 @@ def _draw_corners(img, corners, color=(255, 255, 0), width=2):
 def build_lard_box(run_name=None, source=None, line_width=2):
     """Genere dataset/.../<scenario>/lard_box/ (images + bbox GT LARD dessinees).
 
-    :param source: 'images' ou 'corrupted_images' (defaut: corrupted si dispo).
+    :param source: 'footage' ou 'corrupted_footage' (defaut: corrupted si dispo).
     """
     for scen, ds in _iter_run_datasets(run_name=run_name):
         src = (ds / source) if source else pick_image_source(ds)
@@ -215,7 +215,7 @@ def show_sanity_lard(run_name=None, line_width=2, source=None):
 def build_video(run_name=None, source=None):
     """Genere dataset/.../<scenario>/<scenario>.mp4 (fps depuis <scenario>.json).
 
-    :param source: 'images' | 'corrupted_images' (defaut: corrupted prio).
+    :param source: 'footage' | 'corrupted_footage' (defaut: corrupted prio).
     """
     for scen, ds in _iter_run_datasets(run_name=run_name):
         src = (ds / source) if source else pick_image_source(ds)
@@ -336,7 +336,7 @@ def build_dataset(simulator="xplane", out_dir=DATASET_BUILD_DIR, source=None):
                     images/000000.jpg ...
                     metadata.csv              # ce scenario
 
-    :param source: 'images' | 'corrupted_images' (defaut: corrupted prio).
+    :param source: 'footage' | 'corrupted_footage' (defaut: corrupted prio).
     """
     if out_dir.exists():
         shutil.rmtree(out_dir)

@@ -155,7 +155,7 @@ def apply_faults(images_dir, output_dir, fault_json):
     """Applique les fautes capteur : images_dir -> output_dir selon fault_json.
 
     Lit fault_json (fault_profile.json du scenario), applique les fautes aux
-    images de images_dir et ecrit dans output_dir (dataset .../corrupted_images/).
+    images de images_dir et ecrit dans output_dir (dataset .../corrupted_footage/).
     No-op si fault_json absent ; skip si output_dir contient deja des images.
 
     :return: output_dir si fautes appliquees, images_dir sinon
@@ -168,7 +168,7 @@ def apply_faults(images_dir, output_dir, fault_json):
         return images_dir
 
     if list_images(output_dir):
-        print(f"  [FAULTS] corrupted_images/ existe deja, skip application")
+        print(f"  [FAULTS] {output_dir.name}/ existe deja, skip application")
         return output_dir
 
     print(f"\n  [FAULTS] Application des fautes capteur ({images_dir.parent.name})...")
