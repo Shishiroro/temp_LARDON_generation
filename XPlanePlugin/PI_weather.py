@@ -1,32 +1,60 @@
 """
 PI_weather.py  —  XPPython3 plugin for LARD weather injection
 ========================================================================
-Uses the official XPLMWeather API (X-Plane 12.0+) to inject weather.
-Communicates with the LARD pipeline (sources/export/xplane_weather.py)
-via JSON files exchanged in Resources/plugins/PythonPlugins/lard_exchange/.
+Injects weather through the sim/weather/region/* datarefs (documented and
+writable, see Resources/plugins/DataRefs.txt), NOT through the XPLMWeather
+API. Communicates with the LARD pipeline (sources/xplane_weather.py) via
+JSON files exchanged in Resources/plugins/PythonPlugins/lard_exchange/.
 
-Key implementation notes (XPLMWeather quirks discovered while building this):
-  - cloud_type enum: 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus.
-  - use_real_weather_bool is deprecated/read-only — use the change_mode
-    dataref to switch between manual (0) and real-weather (7) modes.
-  - getWeatherAtLocation returns radius_nm=0 and max_altitude_msl_ft=0;
-    we MUST set them explicitly each call or XP ignores the injection.
-  - isIncremental=False replaces all prior records (used both for set
-    and for clear).
-  - XPLMWeatherInfo_t only exposes SCALARS (temperature_alt / dewpoint_alt);
-    there is NO temp_layers / dewp_layers (see XPPython3/xp_typing.py) — those
-    are region datarefs (temperatures_aloft_deg_c / dewpoint_deg_c, float[13]),
-    a different API. Do not try to write layers through this struct.
-  - Driving fog through the region datarefs was tried (see git history) and
-    reverted: it fixed fog but broke the other profiles.
+WHY NOT XPLMWeather / setWeatherAtLocation (measured 2026-07-17, XP 12.4.2)
+--------------------------------------------------------------------------
+That API is flagged EXPERIMENTAL by Laminar and it SILENTLY IGNORES
+info.visibility: we asked for 500 m and the sim rendered 21 km, every time.
+Three theories were tested against the sim and all three are FALSE:
+  - "XP12 derives visibility from the temperature/dewpoint spread": swept the
+    spread from 2.0 C down to 0.0 C (fully saturated air). Visibility never
+    moved off ~21 km. Humidity does NOT drive visibility.
+  - "info.age must be 0 for the report to have weight": getWeatherAtLocation
+    already returns age=0. No effect.
+  - "change_mode=0 means Rapidly Improving, so the sim burns the fog off":
+    change_mode=3 (Static) changes nothing.
+Fog has in fact NEVER worked in this project, in any version — it is a missing
+feature, not a regression. Do not "restore" anything from git history.
+
+THE RECIPE THAT WORKS (verified on screen: fog + rain at KPDX)
+-------------------------------------------------------------
+  1. change_mode = 3 (Static) — see enum below, 0 is NOT a neutral value.
+  2. write the region datarefs (visibility in STATUTE MILES, not meters).
+  3. update_immediately = 1 — applies everything EXCEPT clouds.
+  4. sim/operation/regen_weather — THE missing piece. Without it the sim
+     never rebuilds its weather grid: the dataref holds the value we wrote
+     but sim/weather/aircraft/* and the render stay on the old one.
+Result: 500 m requested -> 500 m effective, to the meter.
+
+THE TWO SOURCES ARE EXCLUSIVE
+-----------------------------
+sim/weather/region/weather_source: 0=Preset, 1=Real, 2=Controlpad, 3=Plugin.
+regen_weather switches the sim to Preset, and from that moment X-Plane ignores
+every plugin record. So "fog via datarefs + the rest via setWeatherAtLocation"
+CANNOT work (measured: fog OK, clouds and rain dead). That mix is what made the
+earlier attempt look like it "broke the other profiles". Everything goes
+through the datarefs, or nothing does.
+
+STATE IS GLOBAL AND PERSISTS ACROSS SCENARIOS
+---------------------------------------------
+Unlike an XPLMWeather record, these datarefs are sim-wide and survive into the
+next scenario. Hence the rule: EVERY parameter is written on EVERY injection,
+including the defaults and including clear skies. A key we skip is not "the
+default", it is "whatever the previous scenario left". Never make a write
+conditional on the value being non-default.
 
 Installation:
-  Copy this file to X-Plane 12/Resources/plugins/PythonPlugins/
+  py scripts/install_weather_plugin.py
   then reload via menu: Plugins > XPPython3 > Reload Scripts.
 
 Protocol:
   Python pipeline writes weather_command.json  {seq, action, weather}
-  Plugin reads, applies via XPLMWeather API, writes weather_status.json
+  Plugin reads, applies, writes weather_status.json
   Sequence number guards against duplicate processing.
 """
 
@@ -37,6 +65,38 @@ try:
     import xp
 except ImportError:
     raise RuntimeError("PI_weather requires XPPython3")
+
+
+# ---------------------------------------------------------------------------
+# Constantes meteo
+# ---------------------------------------------------------------------------
+
+# sim/weather/region/visibility_reported_sm est en MILES TERRESTRES ; tout le
+# reste du pipeline (XML, WeatherConfig, metadata) raisonne en METRES.
+# La conversion se fait ICI et nulle part ailleurs.
+METERS_PER_STATUTE_MILE = 1609.344
+
+# Ecart temperature <-> point de rosee (C), sur les 13 couches atmo.
+# NB : ne pilote PAS le brouillard (mesure : aucun effet sur la visibilite,
+# meme a 0 = air sature). C'est juste une humidite realiste par defaut.
+DEWPOINT_SPREAD_C = 2.0
+
+# Couches des datarefs atmospheriques region (float[13], cf atmosphere_alt_levels_m)
+ATMOSPHERE_LAYERS = 13
+
+# Couches nuageuses region (float[3])
+CLOUD_LAYERS = 3
+
+# change_mode : TENDANCE appliquee par le sim, pas un simple "manuel vs reel".
+#   0 = Rapidly Improving ... 3 = Static ... 6 = Rapidly Deteriorating
+#   7 = Using Real Weather (METAR en ligne : ecraserait notre injection)
+# 3 est le seul mode qui preserve ce qu'on ecrit. Ecrire 0 en croyant qu'il
+# veut dire "pas de meteo reelle" demande au sim d'ameliorer la meteo.
+CHANGE_MODE_STATIC = 3
+CHANGE_MODE_REAL_WEATHER = 7
+
+# Sentinelle "pas de brouillard" (cf xplane_weather.has_weather / WeatherConfig).
+NO_FOG_VISIBILITY_M = 50000.0
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +157,37 @@ class PythonInterface:
             self.dr_lon = xp.findDataRef("sim/flightmodel/position/longitude")
             self.dr_elev = xp.findDataRef("sim/flightmodel/position/elevation")
 
-            # Weather mode control (replaces deprecated use_real_weather_bool)
+            # --- Meteo : datarefs region (la base modifiable, cf DataRefs.txt) ---
+            # use_real_weather_bool est deprecie/read-only : c'est change_mode
+            # qui commande.
             self.dr_change_mode = xp.findDataRef("sim/weather/region/change_mode")
+            # ATTENTION : en MILES TERRESTRES (le reste du pipeline est en metres).
+            self.dr_visibility_sm = xp.findDataRef(
+                "sim/weather/region/visibility_reported_sm")
+            # Pluie : controle DIRECT, sans nuage. C'est un gain sur l'API
+            # XPLMWeather, qui exigeait un cloud_type >= 0 comme source.
+            self.dr_rain_percent = xp.findDataRef("sim/weather/region/rain_percent")
+            # Nuages : float[3] -> setDatavf obligatoire (setDataf ne marche pas).
+            self.dr_cloud_type = xp.findDataRef("sim/weather/region/cloud_type")
+            self.dr_cloud_coverage = xp.findDataRef(
+                "sim/weather/region/cloud_coverage_percent")
+            self.dr_cloud_base = xp.findDataRef("sim/weather/region/cloud_base_msl_m")
+            self.dr_cloud_tops = xp.findDataRef("sim/weather/region/cloud_tops_msl_m")
+            # Atmosphere : float[13]
+            self.dr_temps_aloft = xp.findDataRef(
+                "sim/weather/region/temperatures_aloft_deg_c")
+            self.dr_dewpoint = xp.findDataRef("sim/weather/region/dewpoint_deg_c")
+            self.dr_sealevel_temp = xp.findDataRef(
+                "sim/weather/region/sealevel_temperature_c")
+            # Applique tout SAUF les nuages (cf DataRefs.txt) sans attendre le
+            # prochain cycle (60 s).
+            self.dr_update_now = xp.findDataRef("sim/weather/region/update_immediately")
+            # Diagnostic : 0=Preset 1=Real 2=Controlpad 3=Plugin
+            self.dr_weather_source = xp.findDataRef("sim/weather/region/weather_source")
+            # Visibilite REELLEMENT rendue (apres protection framerate) : c'est
+            # la seule mesure fiable de ce que la camera voit.
+            self.dr_vis_effective = xp.findDataRef(
+                "sim/graphics/view/visibility_effective_m")
 
             # Time of day
             self.dr_zulu_time = xp.findDataRef("sim/time/zulu_time_sec")
@@ -188,120 +277,180 @@ class PythonInterface:
         self.last_ack_seq = seq
 
     # ------------------------------------------------------------------
-    # Weather injection via XPLMWeather API
+    # Weather injection via the sim/weather/region/* datarefs
     # ------------------------------------------------------------------
 
     def _get_aircraft_pos(self):
-        """Return (lat, lon, elev_msl) of the aircraft."""
-        lat = xp.getDatad(self.dr_lat)
-        lon = xp.getDatad(self.dr_lon)
-        elev = xp.getDataf(self.dr_elev)
-        return lat, lon, elev
+        """Return (lat, lon, elev_msl) of the aircraft — for logging only.
+
+        The region datarefs describe the weather AROUND the aircraft: unlike
+        setWeatherAtLocation there is no lat/lon, no radius_nm and no
+        max_altitude_msl_ft to provide. The weather follows the aircraft, which
+        suits us: we teleport between scenarios and can no longer fall outside
+        an injected zone.
+        """
+        return (xp.getDatad(self.dr_lat), xp.getDatad(self.dr_lon),
+                xp.getDataf(self.dr_elev))
+
+    def _set_layers(self, dref, value, count):
+        """Write the same value on every layer of a float[] dataref.
+
+        setDataf does NOT work on array datarefs — it silently does nothing.
+        setDatavf is mandatory.
+        """
+        xp.setDatavf(dref, [float(value)] * count, 0, count)
 
     def _apply_weather(self, weather):
-        """Inject weather at the aircraft's current position.
+        """Apply the weather described by `weather` (JSON from the pipeline).
 
-        Cloud type enum (XPLMWeather API / new):
-          0 = Cirrus
-          1 = Stratus
-          2 = Cumulus
-          3 = Cumulonimbus
+        EVERY parameter is written on EVERY call, defaults included: these
+        datarefs are global sim state and a value we skip is inherited from the
+        previous scenario, not reset to a default.
+
+        Cloud type enum: 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus.
         """
-        # change_mode dataref: 0..6 = manual modes, 7 = real weather (online METAR).
-        # We must switch out of mode 7 or XP overwrites our injection from METAR.
-        try:
-            xp.setDatai(self.dr_change_mode, 0)
-        except Exception:
-            pass
-
         lat, lon, elev = self._get_aircraft_pos()
 
-        # Build weather info from current state
+        # -- 1. Tendance : Static, sinon le sim fait deriver ce qu'on ecrit --
+        xp.setDatai(self.dr_change_mode,
+                    int(weather.get("change_mode", CHANGE_MODE_STATIC)))
+
+        # -- 2. Visibilite / brouillard --
+        # Le pipeline parle en METRES, le dataref en MILES TERRESTRES.
+        vis_m = float(weather.get("visibility_m", NO_FOG_VISIBILITY_M))
+        xp.setDataf(self.dr_visibility_sm, vis_m / METERS_PER_STATUTE_MILE)
+
+        # -- 3. Pluie --
+        # rain_percent pilote la pluie DIRECTEMENT, sans nuage : contrairement a
+        # l'API XPLMWeather, precip_rate > 0 avec cloud_type = -1 donne bien de
+        # la pluie. La cle JSON garde le nom du parametre XML (precip_rate).
+        rain = float(weather.get("precip_rate", 0.0))
+        xp.setDataf(self.dr_rain_percent, rain)
+
+        # -- 4. Temperature / point de rosee (float[13]) --
+        # L'ecart n'a AUCUN effet sur la visibilite (mesure : balayage 2.0 -> 0.0
+        # C, visibilite inchangee). Il n'est la que pour une humidite realiste.
+        # Ne pas le rebrancher sur le brouillard : ce n'est pas le bon levier.
+        temp = float(weather.get("temperature_c", 15.0))
+        spread = float(weather.get("dewpoint_spread_c", DEWPOINT_SPREAD_C))
+        # Ecrites APRES le regen (cf plus bas) : le regen reconstruit
+        # l'atmosphere depuis le preset et ecrase toute valeur ecrite avant.
+
+        # -- 5. Nuages (float[3]) --
+        # cloud_type = -1 (ou cle absente) => aucun nuage : on ECRIT la couverture
+        # a 0 au lieu de ne rien faire, sinon les nuages du scenario precedent
+        # restent en place.
+        cloud_type = float(weather.get("cloud_type", -1.0))
+        cloud_coverage = float(weather.get("cloud_coverage", 0.0))
+        cloud_base = float(weather.get("cloud_base_msl", 1000.0))
+        cloud_top = float(weather.get("cloud_top_msl", 3000.0))
+        if cloud_type >= 0:
+            types = [cloud_type] + [0.0] * (CLOUD_LAYERS - 1)
+            covs = [cloud_coverage] + [0.0] * (CLOUD_LAYERS - 1)
+            bases = [cloud_base] + [0.0] * (CLOUD_LAYERS - 1)
+            tops = [cloud_top] + [0.0] * (CLOUD_LAYERS - 1)
+        else:
+            types = [0.0] * CLOUD_LAYERS
+            covs = [0.0] * CLOUD_LAYERS
+            bases = [0.0] * CLOUD_LAYERS
+            tops = [0.0] * CLOUD_LAYERS
+        # Valeurs seulement preparees ici : l'ecriture se fait APRES le regen.
+
+        # -- 6. Heure du jour --
+        # time_of_day_h est deja en UTC (conversion locale -> UTC faite cote
+        # pipeline par xplane_weather.local_hour_to_zulu).
+        if "time_of_day_h" in weather:
+            xp.setDatai(self.dr_use_system_time, 0)
+            xp.setDataf(self.dr_zulu_time, float(weather["time_of_day_h"]) * 3600.0)
+
+        # -- 7. Application --
+        # update_immediately applique tout SAUF les nuages ; regen_weather force
+        # le sim a reconstruire sa grille meteo. Sans regen, les datarefs gardent
+        # notre valeur mais le rendu reste sur l'ancienne : c'est LE piege qui a
+        # fait croire pendant des mois que le brouillard etait impossible.
+        xp.setDatai(self.dr_update_now, 1)
+        xp.commandOnce(self.cmd_regen_weather)
+
+        # Ce qui doit etre ecrit APRES le regen : le regen reconstruit l'etat
+        # depuis le preset, donc il ECRASE tout ce qu'on a pose avant. Seule la
+        # visibilite survit (le regen la prend en entree) — d'ou son ecriture
+        # plus haut. Temperature et nuages, eux, sont recalcules : ecrits avant,
+        # ils sont perdus (mesure : temperature_c=-10 ressortait a +15, donc
+        # aucune neige possible).
+        self._set_layers(self.dr_temps_aloft, temp, ATMOSPHERE_LAYERS)
+        self._set_layers(self.dr_dewpoint, temp - spread, ATMOSPHERE_LAYERS)
+        xp.setDataf(self.dr_sealevel_temp, temp)
+
+        xp.setDatavf(self.dr_cloud_type, types, 0, CLOUD_LAYERS)
+        xp.setDatavf(self.dr_cloud_coverage, covs, 0, CLOUD_LAYERS)
+        xp.setDatavf(self.dr_cloud_base, bases, 0, CLOUD_LAYERS)
+        xp.setDatavf(self.dr_cloud_tops, tops, 0, CLOUD_LAYERS)
+
+        # Re-appliquer : update_immediately ne vaut que pour le cycle en cours.
+        xp.setDatai(self.dr_update_now, 1)
+
+        # -- 7bis. Nuages et precipitation via l'API XPLMWeather --
+        # Les deux API se COMPLETENT, elles ne s'excluent pas (mesure) :
+        #   - les datarefs region cloud_* sont inertes ici (mode Preset) mais
+        #     visibility_reported_sm y est exact au metre ;
+        #   - setWeatherAtLocation ignore info.visibility mais rend les nuages
+        #     et la pluie instantanement.
+        # D'ou ce partage : visibilite par les datarefs (ci-dessus), nuages et
+        # pluie par l'API (ici). Cet appel doit venir APRES le regen, sinon le
+        # regen efface le record.
+        # Effet de bord assume : l'API reecrit aussi la visibilite et le sim
+        # melange les deux -> ~0.5 a 4 % d'ecart sur la consigne de brouillard
+        # (500 m -> 489/521 m ; 20000 m -> 19891 m). Largement dans la tolerance.
         info = xp.getWeatherAtLocation(lat, lon, elev)
-
-        # -- Clouds (layer 0) --
-        # Si cloud_type est present dans les params, on controle les nuages.
-        # Sinon on ne touche pas aux cloud layers — XP12 gere tout seul
-        # (ex: nuages auto generes avec la pluie).
-        cloud_type = None
-        cloud_coverage = 0.0
-        cloud_base = 0.0
-        cloud_top = 0.0
-        if "cloud_type" in weather:
-            cloud_type = float(weather["cloud_type"])
-            cloud_coverage = float(weather.get("cloud_coverage", 0.0))
-            cloud_base = float(weather.get("cloud_base_msl", 1000.0))
-            cloud_top = float(weather.get("cloud_top_msl", 3000.0))
-
+        if cloud_type >= 0:
             info.cloud_layers[0].cloud_type = cloud_type
             info.cloud_layers[0].coverage = cloud_coverage
             info.cloud_layers[0].alt_base = cloud_base
             info.cloud_layers[0].alt_top = cloud_top
-
-            # Clear other cloud layers
-            for i in range(1, len(info.cloud_layers)):
-                info.cloud_layers[i].cloud_type = 0.0
-                info.cloud_layers[i].coverage = 0.0
-
-        # -- Precipitation --
-        info.precip_rate = float(weather.get("precip_rate", 0.0))
-
-        # -- Visibility --
-        info.visibility = float(weather.get("visibility_m", 50000.0))
-
-        # -- Temperature (for snow: < 0°C) --
-        # XPLMWeatherInfo_t n'expose QUE des scalaires (cf XPPython3/xp_typing.py) :
-        # temperature_alt / dewpoint_alt. temp_layers / dewp_layers N'EXISTENT PAS,
-        # c'est une confusion avec les datarefs region temperatures_aloft_deg_c /
-        # dewpoint_deg_c (float[13]). Une boucle sur info.temp_layers levait donc
-        # un AttributeError avale par un except/pass : bloc mort, retire ici.
-        if "temperature_c" in weather:
-            info.temperature_alt = float(weather["temperature_c"])
-
-        # -- Coverage radius and altitude cap --
-        # CRITICAL: getWeatherAtLocation returns 0 for these fields,
-        # so we MUST always set them explicitly
+        else:
+            info.cloud_layers[0].cloud_type = 0.0
+            info.cloud_layers[0].coverage = 0.0
+        for i in range(1, len(info.cloud_layers)):
+            info.cloud_layers[i].cloud_type = 0.0
+            info.cloud_layers[i].coverage = 0.0
+        info.precip_rate = rain
+        info.visibility = vis_m
+        info.temperature_alt = temp
+        info.dewpoint_alt = temp - spread
+        # radius_nm / max_altitude_msl_ft valent 0 au retour de
+        # getWeatherAtLocation : sans ecriture explicite, XP ignore l'injection.
         info.radius_nm = float(weather.get("radius_nm", 50.0))
         info.max_altitude_msl_ft = float(weather.get("max_alt_ft", 30000.0))
-
-        # -- Time of day --
-        # time_of_day_h is already in UTC (the pipeline converts local hour ->
-        # UTC via timezonefinder + pytz in xplane_weather.local_hour_to_zulu).
-        # zulu_time_sec is XP's dataref for "seconds since midnight UTC".
-        if "time_of_day_h" in weather:
-            hour = float(weather["time_of_day_h"])
-            try:
-                xp.setDatai(self.dr_use_system_time, 0)
-            except Exception:
-                pass
-            xp.setDataf(self.dr_zulu_time, hour * 3600.0)
-
-        # Apply weather — isIncremental=False to replace all prior records
         with xp.weatherUpdateContext(isIncremental=False, updateImmediately=True):
             xp.setWeatherAtLocation(lat, lon, elev, info)
 
-        # -- Rain drop scale (private dataref, hors XPLMWeather) --
+        # -- 8. Taille des gouttes (dataref prive, hors modele region) --
         if "rain_scale" in weather and self.dr_rain_scale is not None:
             try:
                 xp.setDataf(self.dr_rain_scale, float(weather["rain_scale"]))
             except Exception as e:
                 xp.log(f"LARD Weather v2: rain_scale error: {e}")
 
-        time_str = f" time={weather['time_of_day_h']}h" if "time_of_day_h" in weather else ""
-        cloud_str = "auto (XP12)" if cloud_type is None else f"type={cloud_type:.0f} cov={cloud_coverage:.1f} {cloud_base:.0f}-{cloud_top:.0f}m"
-        xp.log(f"LARD Weather v2: SET clouds=[{cloud_str}] "
-               f"precip={info.precip_rate:.2f} "
-               f"vis={info.visibility:.0f}m radius={info.radius_nm:.0f}nm"
-               f"{time_str} at ({lat:.4f}, {lon:.4f})")
+        cloud_str = ("aucun" if cloud_type < 0 else
+                     f"type={cloud_type:.0f} cov={cloud_coverage:.2f} "
+                     f"{cloud_base:.0f}-{cloud_top:.0f}m")
+        time_str = (f" time={weather['time_of_day_h']:.1f}hZ"
+                    if "time_of_day_h" in weather else "")
+        xp.log(f"LARD Weather v2: SET vis={vis_m:.0f}m rain={rain:.2f} "
+               f"temp={temp:.1f}C nuages=[{cloud_str}]{time_str} "
+               f"at ({lat:.4f}, {lon:.4f})")
 
-        # Readback : verifier ce que XP12 a reellement applique
+        # PAS de readback de la visibilite ici : le sim met plusieurs secondes a
+        # converger, donc une lecture immediate renvoie l'etat du scenario
+        # PRECEDENT (vu en test : "demande=500m effective=14997m", ou 14997 etait
+        # l'ancienne valeur). C'est un piege a diagnostic, pas une mesure.
+        # Pour verifier une injection : lire sim/graphics/view/visibility_effective_m
+        # APRES la stabilisation (cf inject_weather cote pipeline).
+        # weather_source est instantane, lui, et dit quelle source pilote :
+        # 0=Preset (etat normal ici, du au regen) 3=Plugin.
         try:
-            rb = xp.getWeatherAtLocation(lat, lon, elev)
-            for i in range(min(3, len(rb.cloud_layers))):
-                cl = rb.cloud_layers[i]
-                xp.log(f"LARD Weather v2: READBACK layer[{i}] "
-                       f"type={cl.cloud_type:.0f} cov={cl.coverage:.2f} "
-                       f"base={cl.alt_base:.0f}m top={cl.alt_top:.0f}m")
+            xp.log(f"LARD Weather v2: source={xp.getDatai(self.dr_weather_source)} "
+                   f"(0=Preset 3=Plugin)")
         except Exception as e:
             xp.log(f"LARD Weather v2: readback error: {e}")
 
@@ -342,37 +491,34 @@ class PythonInterface:
             xp.log(f"LARD Weather v2: sim_speed command error: {e}")
 
     def _clear_weather(self):
-        """Reset to default weather.
+        """Hand the weather back to X-Plane (real METAR weather).
 
-        Calling each step in isolation is not enough — XP's weather state
-        survives across our plugin's life unless we also force a regen
-        and switch back to real-weather mode.
+        Called between runs, not between scenarios: a scenario does not need a
+        clear, since _apply_weather rewrites every dataref anyway.
+
+        There is no plugin record to erase any more (we no longer use
+        setWeatherAtLocation), so this is just: stop forcing, let the sim take
+        over again.
         """
-        # 1) Entering an isIncremental=False context and exiting without any
-        #    setWeatherAtLocation call wipes all records we previously injected.
-        with xp.weatherUpdateContext(isIncremental=False, updateImmediately=True):
-            pass
+        # 1) Ciel degage + pas de pluie, pour ne rien laisser trainer si le
+        #    passage en meteo reelle echoue.
+        xp.setDataf(self.dr_visibility_sm, NO_FOG_VISIBILITY_M / METERS_PER_STATUTE_MILE)
+        xp.setDataf(self.dr_rain_percent, 0.0)
+        for dref in (self.dr_cloud_type, self.dr_cloud_coverage,
+                     self.dr_cloud_base, self.dr_cloud_tops):
+            xp.setDatavf(dref, [0.0] * CLOUD_LAYERS, 0, CLOUD_LAYERS)
 
-        # 2) Force XP to rebuild the weather grid from scratch (otherwise the
-        #    cleared cells stay "manual but empty" — clouds linger visually).
-        try:
-            xp.commandOnce(self.cmd_regen_weather)
-        except Exception:
-            pass
+        # 2) Rendre la main au METAR en ligne.
+        xp.setDatai(self.dr_change_mode, CHANGE_MODE_REAL_WEATHER)
 
-        # 3) Hand control back to METAR-driven real weather.
-        try:
-            xp.setDatai(self.dr_change_mode, 7)
-        except Exception:
-            pass
+        # 3) Reconstruire la grille, sinon le sim reste sur notre etat force.
+        xp.setDatai(self.dr_update_now, 1)
+        xp.commandOnce(self.cmd_regen_weather)
 
-        # 4) Restore system time (we forced time_of_day_h while injecting).
-        try:
-            xp.setDatai(self.dr_use_system_time, 1)
-        except Exception:
-            pass
+        # 4) Rendre la main a l'heure systeme (forcee par time_of_day_h).
+        xp.setDatai(self.dr_use_system_time, 1)
 
-        xp.log("LARD Weather v2: CLEARED (regen + real weather + system time)")
+        xp.log("LARD Weather v2: CLEARED (real weather + regen + system time)")
 
     # ------------------------------------------------------------------
     # Status file I/O
