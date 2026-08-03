@@ -51,6 +51,12 @@ DEFAULT_WEATHER_EFFECT_DURATION = 8.0   # accumulation flaques/neige (sim accele
 # Ex: 8x pendant 8s reel = ~64s de meteo simulee.
 SIM_SPEED_BOOST = 8
 
+# Delai entre les deux phases d'injection (cf inject_weather). setWeatherAtLocation
+# met ~5 s a etre digere par le sim ; la phase 2 verrouille la temperature, donc
+# elle doit attendre que la phase 1 ait pris effet. Mesure : 5 s suffisent, 6 s
+# par securite. Ce delai est PRIS SUR load_texture_duration, pas ajoute.
+XPLM_SETTLE_DURATION = 6.0
+
 
 @dataclass
 class WeatherConfig:
@@ -64,13 +70,24 @@ class WeatherConfig:
     temperature_c: float = 15.0
     time_of_day_h: float = 12.0
     rain_scale: float = 1.0          # taille visuelle des gouttes (sim/private/controls/rain/scale)
-    weather_zone_radius_nm: float = 50.0  # rayon de la zone meteo XPLMWeather (nm ; 1 nm = 1.852 km)
+    # Rayon de la zone XPLMWeather (nm ; 1 nm = 1.852 km). Ne concerne QUE les
+    # nuages et la pluie : la visibilite passe par les datarefs region, qui
+    # decrivent la meteo autour de l'avion sans notion d'etendue.
+    weather_zone_radius_nm: float = 50.0
     load_texture_duration: float = DEFAULT_LOAD_TEXTURE_DURATION      # delai chargement textures + stabilisation nuages (s, vitesse normale)
     weather_effect_duration: float = DEFAULT_WEATHER_EFFECT_DURATION  # delai accumulation flaques/neige (s, sim 8x ; ignore si precip=0)
 
 
 def has_weather(config):
-    """Retourne True si la config modifie la meteo par rapport au defaut."""
+    """Retourne True si la config modifie la meteo par rapport au defaut.
+
+    ATTENTION : ne PAS s'en servir pour decider s'il faut injecter. Le plugin
+    ecrit des datarefs sim/weather/region/*, qui sont un etat GLOBAL et
+    PERSISTANT : ne pas injecter ne veut pas dire "meteo par defaut" mais
+    "on garde celle du scenario precedent". Un scenario clair apres un scenario
+    brouillard resterait dans le brouillard.
+    Sert uniquement a l'affichage / aux tests.
+    """
     return (config.precip_rate > 0
             or config.cloud_type >= 0
             or config.fog_visibility < 50000
@@ -149,12 +166,21 @@ def build_plugin_command(config, aircraft_max_alt_m=200.0, latitude=0.0, longitu
 
     # NB : la cle "visibility_m" est le nom attendu par le plugin XPPython3
     # (protocole JSON), distinct du champ XML/WeatherConfig "fog_visibility".
+    #
+    # radius_nm / max_alt_ft ne servent qu'a setWeatherAtLocation (nuages et
+    # pluie), pas aux datarefs region (visibilite), qui n'ont ni coordonnees ni
+    # etendue. Le plugin utilise les deux API en parallele, donc on les envoie
+    # toujours : sans eux, getWeatherAtLocation les renvoie a 0 et XP ignore
+    # purement et simplement l'injection des nuages.
     params = {
         "precip_rate": config.precip_rate,
         "visibility_m": visibility,
         "radius_nm": config.weather_zone_radius_nm,
         "max_alt_ft": 30000.0,
     }
+
+    # NB : la cle "weather_api" est ajoutee par inject_weather, qui envoie ce
+    # meme payload DEUX FOIS (cf INJECTION EN DEUX PHASES la-bas).
 
     # Temperature : TOUJOURS envoyee, meme egale au defaut X-Plane (15 C).
     # Cote plugin, `info` est relu du sim (getWeatherAtLocation) : une cle absente
@@ -243,7 +269,12 @@ def load_weather_profile(profile_path):
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCHANGE_DIR = None
-_seq = 0
+# Amorce sur l'horloge (secondes epoch), pas 0 : le plugin deduplique sur
+# seq == last_ack_seq et garde ce dernier entre deux process Python. Deux runs
+# consecutifs partant de 0 verraient leur 1re commande avalee en silence. Le
+# temps augmentant toujours, un nouveau process part forcement au-dessus du
+# dernier seq acquitte par le precedent -> jamais de collision.
+_seq = int(time.time())
 
 
 def set_exchange_dir(xplane_dir):
@@ -333,18 +364,42 @@ def inject_weather(config, aircraft_max_alt_m=200.0, latitude=0.0, longitude=0.0
     :param longitude: longitude de l'aeroport (pour conversion heure locale → UTC)
     :return: True si l'injection a reussi
     """
-    if not has_weather(config):
-        print(f"  [WEATHER] Pas de meteo active, skip")
-        return True
-
+    # PAS de skip quand la config est "par defaut" : le plugin pilote des
+    # datarefs region, un etat GLOBAL qui survit au scenario. Sauter l'injection
+    # ferait heriter la meteo du scenario precedent (brouillard qui persiste sur
+    # un scenario clair, etc.). On injecte TOUJOURS, meme un ciel degage.
     params = build_plugin_command(
         config, aircraft_max_alt_m=aircraft_max_alt_m,
         latitude=latitude, longitude=longitude,
     )
-    result = _send_weather_command("set_weather", weather=params)
 
+    # --- INJECTION EN DEUX PHASES ---
+    # Les deux API meteo de XP12 sont complementaires, mais l'ORDRE et le DELAI
+    # entre elles sont critiques :
+    #   Phase 1 "pure_xplm" : setWeatherAtLocation seul (aucun dataref region).
+    #       Pose temperature, nuages, pluie/neige. La visibilite y est ignoree.
+    #   Phase 2 "datarefs"  : sim/weather/region/* + regen_weather.
+    #       Pose la visibilite, rendue EXACTE (0-1 % d'ecart).
+    #
+    # Pourquoi le delai : ecrire un dataref region VERROUILLE la temperature, et
+    # setWeatherAtLocation met ~5 s a etre digere par le sim. Enchainer les deux
+    # sans attendre fige donc la temperature du scenario PRECEDENT : un scenario
+    # pluie a +15 C juste apres un scenario neige rendait de la NEIGE en
+    # annoncant 15 C dans sa metadata — GT fausse mais plausible.
+    # Avec le delai, le verrou fige la BONNE valeur : brouillard exact ET
+    # temperature correcte, sans arbitrage.
+    result = _send_weather_command(
+        "set_weather", weather={**params, "weather_api": "pure_xplm"})
     if not result or not result.get("ok"):
-        print(f"  [WEATHER] ECHEC injection meteo")
+        print(f"  [WEATHER] ECHEC injection meteo (phase 1)")
+        return False
+
+    time.sleep(XPLM_SETTLE_DURATION)
+
+    result = _send_weather_command(
+        "set_weather", weather={**params, "weather_api": "datarefs"})
+    if not result or not result.get("ok"):
+        print(f"  [WEATHER] ECHEC injection meteo (phase 2)")
         return False
 
     # Log

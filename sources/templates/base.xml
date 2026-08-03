@@ -111,7 +111,7 @@
             <parameter name="cloud_thickness_m"       type="real" min="500"  max="3000"/>
 
             <!-- Visibilite (m) -->
-            <parameter name="fog_visibility"          type="real" min="40000" max="40000"/>
+            <parameter name="fog_visibility"          type="real" min="50000" max="50000"/>
 
             <!-- Temperature (°C) : pluie vs neige -->
             <parameter name="temperature_c"           type="real" min="-15"   max="45"/>
