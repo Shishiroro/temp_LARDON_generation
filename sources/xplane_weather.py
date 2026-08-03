@@ -51,6 +51,12 @@ DEFAULT_WEATHER_EFFECT_DURATION = 8.0   # accumulation flaques/neige (sim accele
 # Ex: 8x pendant 8s reel = ~64s de meteo simulee.
 SIM_SPEED_BOOST = 8
 
+# Delai entre les deux phases d'injection (cf inject_weather). setWeatherAtLocation
+# met ~5 s a etre digere par le sim ; la phase 2 verrouille la temperature, donc
+# elle doit attendre que la phase 1 ait pris effet. Mesure : 5 s suffisent, 6 s
+# par securite. Ce delai est PRIS SUR load_texture_duration, pas ajoute.
+XPLM_SETTLE_DURATION = 6.0
+
 
 @dataclass
 class WeatherConfig:
@@ -172,6 +178,9 @@ def build_plugin_command(config, aircraft_max_alt_m=200.0, latitude=0.0, longitu
         "radius_nm": config.weather_zone_radius_nm,
         "max_alt_ft": 30000.0,
     }
+
+    # NB : la cle "weather_api" est ajoutee par inject_weather, qui envoie ce
+    # meme payload DEUX FOIS (cf INJECTION EN DEUX PHASES la-bas).
 
     # Temperature : TOUJOURS envoyee, meme egale au defaut X-Plane (15 C).
     # Cote plugin, `info` est relu du sim (getWeatherAtLocation) : une cle absente
@@ -358,10 +367,34 @@ def inject_weather(config, aircraft_max_alt_m=200.0, latitude=0.0, longitude=0.0
         config, aircraft_max_alt_m=aircraft_max_alt_m,
         latitude=latitude, longitude=longitude,
     )
-    result = _send_weather_command("set_weather", weather=params)
 
+    # --- INJECTION EN DEUX PHASES ---
+    # Les deux API meteo de XP12 sont complementaires, mais l'ORDRE et le DELAI
+    # entre elles sont critiques :
+    #   Phase 1 "pure_xplm" : setWeatherAtLocation seul (aucun dataref region).
+    #       Pose temperature, nuages, pluie/neige. La visibilite y est ignoree.
+    #   Phase 2 "datarefs"  : sim/weather/region/* + regen_weather.
+    #       Pose la visibilite, rendue EXACTE (0-1 % d'ecart).
+    #
+    # Pourquoi le delai : ecrire un dataref region VERROUILLE la temperature, et
+    # setWeatherAtLocation met ~5 s a etre digere par le sim. Enchainer les deux
+    # sans attendre fige donc la temperature du scenario PRECEDENT : un scenario
+    # pluie a +15 C juste apres un scenario neige rendait de la NEIGE en
+    # annoncant 15 C dans sa metadata — GT fausse mais plausible.
+    # Avec le delai, le verrou fige la BONNE valeur : brouillard exact ET
+    # temperature correcte, sans arbitrage.
+    result = _send_weather_command(
+        "set_weather", weather={**params, "weather_api": "pure_xplm"})
     if not result or not result.get("ok"):
-        print(f"  [WEATHER] ECHEC injection meteo")
+        print(f"  [WEATHER] ECHEC injection meteo (phase 1)")
+        return False
+
+    time.sleep(XPLM_SETTLE_DURATION)
+
+    result = _send_weather_command(
+        "set_weather", weather={**params, "weather_api": "datarefs"})
+    if not result or not result.get("ok"):
+        print(f"  [WEATHER] ECHEC injection meteo (phase 2)")
         return False
 
     # Log

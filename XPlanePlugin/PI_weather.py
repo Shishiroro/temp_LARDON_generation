@@ -179,6 +179,20 @@ class PythonInterface:
             self.dr_dewpoint = xp.findDataRef("sim/weather/region/dewpoint_deg_c")
             self.dr_sealevel_temp = xp.findDataRef(
                 "sim/weather/region/sealevel_temperature_c")
+            # Altitudes des 13 couches. atmosphere_alt_levels_m est READ-ONLY et
+            # donne les altitudes de reference ; temperature_altitude_msl_m est
+            # writable et dit A QUELLES altitudes s'appliquent temperatures_aloft.
+            # On ne l'a jamais ecrit : si le tableau est a zero, nos temperatures
+            # sont peut-etre posees a une altitude qui n'existe pas.
+            self.dr_atmo_levels = xp.findDataRef(
+                "sim/weather/region/atmosphere_alt_levels_m")
+            self.dr_temp_altitude = xp.findDataRef(
+                "sim/weather/region/temperature_altitude_msl_m")
+            # Mesure de la neige au point CAMERA (read-only) : la verite terrain,
+            # au lieu de deduire la neige de la temperature.
+            self.dr_view_temp = xp.findDataRef("sim/weather/view/temperature_C")
+            self.dr_view_snow = xp.findDataRef("sim/weather/view/snow_ratio")
+            self.dr_view_rain = xp.findDataRef("sim/weather/view/rain_ratio")
             # Applique tout SAUF les nuages (cf DataRefs.txt) sans attendre le
             # prochain cycle (60 s).
             self.dr_update_now = xp.findDataRef("sim/weather/region/update_immediately")
@@ -300,6 +314,46 @@ class PythonInterface:
         """
         xp.setDatavf(dref, [float(value)] * count, 0, count)
 
+    def _apply_xplm_only(self, weather, lat, lon, elev):
+        """Ancien comportement : setWeatherAtLocation SEUL, zero dataref region.
+
+        Sert a tester si le mode Preset (donc le verrou sur la temperature) est
+        declenche par le simple fait d'ecrire un dataref region. C'est le code
+        qui produisait la neige avant la migration.
+        """
+        temp = float(weather.get("temperature_c", 15.0))
+        spread = float(weather.get("dewpoint_spread_c", DEWPOINT_SPREAD_C))
+        info = xp.getWeatherAtLocation(lat, lon, elev)
+        cloud_type = float(weather.get("cloud_type", -1.0))
+        if cloud_type >= 0:
+            info.cloud_layers[0].cloud_type = cloud_type
+            info.cloud_layers[0].coverage = float(weather.get("cloud_coverage", 0.0))
+            info.cloud_layers[0].alt_base = float(weather.get("cloud_base_msl", 1000.0))
+            info.cloud_layers[0].alt_top = float(weather.get("cloud_top_msl", 3000.0))
+        else:
+            info.cloud_layers[0].cloud_type = 0.0
+            info.cloud_layers[0].coverage = 0.0
+        for i in range(1, len(info.cloud_layers)):
+            info.cloud_layers[i].cloud_type = 0.0
+            info.cloud_layers[i].coverage = 0.0
+        info.precip_rate = float(weather.get("precip_rate", 0.0))
+        info.visibility = float(weather.get("visibility_m", NO_FOG_VISIBILITY_M))
+        info.temperature_alt = temp
+        info.dewpoint_alt = temp - spread
+        for i in range(len(info.temp_layers)):
+            info.temp_layers[i] = temp
+        for i in range(len(info.dewp_layers)):
+            info.dewp_layers[i] = temp - spread
+        info.radius_nm = float(weather.get("radius_nm", 50.0))
+        info.max_altitude_msl_ft = float(weather.get("max_alt_ft", 30000.0))
+        with xp.weatherUpdateContext(isIncremental=False, updateImmediately=True):
+            xp.setWeatherAtLocation(lat, lon, elev, info)
+        xp.log(f"LARD Weather v2: PURE_XPLM temp={temp:.1f}C "
+               f"precip={info.precip_rate:.2f} vis={info.visibility:.0f}m "
+               f"source={xp.getDatai(self.dr_weather_source)} "
+               f"sealevel={xp.getDataf(self.dr_sealevel_temp):.1f}C "
+               f"view_temp={xp.getDataf(self.dr_view_temp):.1f}C")
+
     def _apply_weather(self, weather):
         """Apply the weather described by `weather` (JSON from the pipeline).
 
@@ -310,6 +364,25 @@ class PythonInterface:
         Cloud type enum: 0=Cirrus, 1=Stratus, 2=Cumulus, 3=Cumulonimbus.
         """
         lat, lon, elev = self._get_aircraft_pos()
+
+        # weather_api = "pure_xplm" : n'ecrit AUCUN dataref region, uniquement
+        # setWeatherAtLocation — c'est l'ancien comportement, celui qui faisait
+        # la neige. Hypothese testee ici : c'est le fait de TOUCHER aux datarefs
+        # region qui force le sim en mode Preset, lequel verrouille la
+        # temperature. Si elle est juste, brouillard et neige sont exclusifs et
+        # le choix doit se faire par scenario.
+        api = weather.get("weather_api", "datarefs")
+        if api == "pure_xplm":
+            self._apply_xplm_only(weather, lat, lon, elev)
+            return
+
+        # setWeatherAtLocation D'ABORD, datarefs region ENSUITE.
+        # Ecrire un dataref region verrouille la temperature ; il faut donc
+        # qu'elle soit deja a la bonne valeur AVANT. Sans ca elle reste figee sur
+        # celle du scenario precedent : un scenario pluie a +15 C juste apres un
+        # scenario neige rendait de la NEIGE tout en annoncant 15 C dans la
+        # metadata — GT fausse mais plausible, le pire mode de defaillance.
+        self._apply_xplm_only(weather, lat, lon, elev)
 
         # -- 1. Tendance : Static, sinon le sim fait deriver ce qu'on ecrit --
         xp.setDatai(self.dr_change_mode,
@@ -369,7 +442,15 @@ class PythonInterface:
         # notre valeur mais le rendu reste sur l'ancienne : c'est LE piege qui a
         # fait croire pendant des mois que le brouillard etait impossible.
         xp.setDatai(self.dr_update_now, 1)
-        xp.commandOnce(self.cmd_regen_weather)
+        # weather_api : "datarefs" (defaut) = regen -> brouillard exact, mais le
+        # sim bascule en mode Preset qui VERROUILLE la temperature (pas de neige).
+        #              "xplm" = pas de regen -> on reste en mode Plugin, la
+        # temperature repond (neige possible) mais la visibilite est ignoree.
+        # regen_weather est ce qui bascule la source, et weather_source est
+        # READ-ONLY : on ne peut pas revenir en arriere dans le meme scenario.
+        api = weather.get("weather_api", "datarefs")
+        if api != "xplm":
+            xp.commandOnce(self.cmd_regen_weather)
 
         # Ce qui doit etre ecrit APRES le regen : le regen reconstruit l'etat
         # depuis le preset, donc il ECRASE tout ce qu'on a pose avant. Seule la
@@ -377,6 +458,13 @@ class PythonInterface:
         # plus haut. Temperature et nuages, eux, sont recalcules : ecrits avant,
         # ils sont perdus (mesure : temperature_c=-10 ressortait a +15, donc
         # aucune neige possible).
+        # Les altitudes AVANT les temperatures : temperatures_aloft_deg_c n'a de
+        # sens que rapporte a temperature_altitude_msl_m. On reprend les
+        # altitudes de reference du sim (atmosphere_alt_levels_m, read-only).
+        levels = []
+        xp.getDatavf(self.dr_atmo_levels, levels, 0, ATMOSPHERE_LAYERS)
+        if levels:
+            xp.setDatavf(self.dr_temp_altitude, levels, 0, len(levels))
         self._set_layers(self.dr_temps_aloft, temp, ATMOSPHERE_LAYERS)
         self._set_layers(self.dr_dewpoint, temp - spread, ATMOSPHERE_LAYERS)
         xp.setDataf(self.dr_sealevel_temp, temp)
@@ -449,8 +537,24 @@ class PythonInterface:
         # weather_source est instantane, lui, et dit quelle source pilote :
         # 0=Preset (etat normal ici, du au regen) 3=Plugin.
         try:
-            xp.log(f"LARD Weather v2: source={xp.getDatai(self.dr_weather_source)} "
-                   f"(0=Preset 3=Plugin)")
+            # Relecture des TABLEAUX : impossible en UDP (RREF renvoie 0.00 sur
+            # les float[] et m'a fait croire trois fois que l'ecriture echouait).
+            # getDatavf cote plugin est le seul moyen de savoir si setDatavf a
+            # atteint sa cible.
+            rb_temps, rb_dewp, rb_alt, rb_cov = [], [], [], []
+            xp.getDatavf(self.dr_temps_aloft, rb_temps, 0, 3)
+            xp.getDatavf(self.dr_dewpoint, rb_dewp, 0, 3)
+            xp.getDatavf(self.dr_temp_altitude, rb_alt, 0, 3)
+            xp.getDatavf(self.dr_cloud_coverage, rb_cov, 0, CLOUD_LAYERS)
+            xp.log(f"LARD Weather v2: ARRAYS temps_aloft[0:3]={rb_temps} "
+                   f"dewp[0:3]={rb_dewp} temp_alt[0:3]={rb_alt} cov={rb_cov}")
+            xp.log(f"LARD Weather v2: SCALARS sealevel="
+                   f"{xp.getDataf(self.dr_sealevel_temp):.1f}C "
+                   f"view_temp={xp.getDataf(self.dr_view_temp):.1f}C "
+                   f"view_snow={xp.getDataf(self.dr_view_snow):.2f} "
+                   f"view_rain={xp.getDataf(self.dr_view_rain):.2f} "
+                   f"source={xp.getDatai(self.dr_weather_source)} "
+                   f"(demande temp={temp:.1f}C)")
         except Exception as e:
             xp.log(f"LARD Weather v2: readback error: {e}")
 
