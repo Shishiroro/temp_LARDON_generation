@@ -371,18 +371,20 @@ class PythonInterface:
         # region qui force le sim en mode Preset, lequel verrouille la
         # temperature. Si elle est juste, brouillard et neige sont exclusifs et
         # le choix doit se faire par scenario.
+        # Mode "pure_xplm" : setWeatherAtLocation SEUL, aucun dataref region.
+        # C'est la phase 1 de l'injection en deux temps (cf inject_weather) : elle
+        # pose la temperature AVANT que le mode datarefs ne la verrouille. Le sim
+        # met ~5 s a la digerer, d'ou le delai cote pipeline entre les deux phases.
         api = weather.get("weather_api", "datarefs")
         if api == "pure_xplm":
             self._apply_xplm_only(weather, lat, lon, elev)
             return
 
-        # setWeatherAtLocation D'ABORD, datarefs region ENSUITE.
-        # Ecrire un dataref region verrouille la temperature ; il faut donc
-        # qu'elle soit deja a la bonne valeur AVANT. Sans ca elle reste figee sur
-        # celle du scenario precedent : un scenario pluie a +15 C juste apres un
-        # scenario neige rendait de la NEIGE tout en annoncant 15 C dans la
-        # metadata — GT fausse mais plausible, le pire mode de defaillance.
-        self._apply_xplm_only(weather, lat, lon, elev)
+        # Mode "datarefs" (phase 2) : visibilite exacte via les datarefs region.
+        # La temperature a deja ete posee et digeree par la phase 1 ; ici les
+        # datarefs region la verrouillent, mais a la BONNE valeur. Les nuages et
+        # la pluie sont (re)poses par le bloc 7bis (setWeatherAtLocation) apres le
+        # regen — un seul appel, plus de double injection.
 
         # -- 1. Tendance : Static, sinon le sim fait deriver ce qu'on ecrit --
         xp.setDatai(self.dr_change_mode,
@@ -442,15 +444,7 @@ class PythonInterface:
         # notre valeur mais le rendu reste sur l'ancienne : c'est LE piege qui a
         # fait croire pendant des mois que le brouillard etait impossible.
         xp.setDatai(self.dr_update_now, 1)
-        # weather_api : "datarefs" (defaut) = regen -> brouillard exact, mais le
-        # sim bascule en mode Preset qui VERROUILLE la temperature (pas de neige).
-        #              "xplm" = pas de regen -> on reste en mode Plugin, la
-        # temperature repond (neige possible) mais la visibilite est ignoree.
-        # regen_weather est ce qui bascule la source, et weather_source est
-        # READ-ONLY : on ne peut pas revenir en arriere dans le meme scenario.
-        api = weather.get("weather_api", "datarefs")
-        if api != "xplm":
-            xp.commandOnce(self.cmd_regen_weather)
+        xp.commandOnce(self.cmd_regen_weather)
 
         # Ce qui doit etre ecrit APRES le regen : le regen reconstruit l'etat
         # depuis le preset, donc il ECRASE tout ce qu'on a pose avant. Seule la
@@ -530,33 +524,10 @@ class PythonInterface:
 
         # PAS de readback de la visibilite ici : le sim met plusieurs secondes a
         # converger, donc une lecture immediate renvoie l'etat du scenario
-        # PRECEDENT (vu en test : "demande=500m effective=14997m", ou 14997 etait
-        # l'ancienne valeur). C'est un piege a diagnostic, pas une mesure.
-        # Pour verifier une injection : lire sim/graphics/view/visibility_effective_m
-        # APRES la stabilisation (cf inject_weather cote pipeline).
-        # weather_source est instantane, lui, et dit quelle source pilote :
-        # 0=Preset (etat normal ici, du au regen) 3=Plugin.
-        try:
-            # Relecture des TABLEAUX : impossible en UDP (RREF renvoie 0.00 sur
-            # les float[] et m'a fait croire trois fois que l'ecriture echouait).
-            # getDatavf cote plugin est le seul moyen de savoir si setDatavf a
-            # atteint sa cible.
-            rb_temps, rb_dewp, rb_alt, rb_cov = [], [], [], []
-            xp.getDatavf(self.dr_temps_aloft, rb_temps, 0, 3)
-            xp.getDatavf(self.dr_dewpoint, rb_dewp, 0, 3)
-            xp.getDatavf(self.dr_temp_altitude, rb_alt, 0, 3)
-            xp.getDatavf(self.dr_cloud_coverage, rb_cov, 0, CLOUD_LAYERS)
-            xp.log(f"LARD Weather v2: ARRAYS temps_aloft[0:3]={rb_temps} "
-                   f"dewp[0:3]={rb_dewp} temp_alt[0:3]={rb_alt} cov={rb_cov}")
-            xp.log(f"LARD Weather v2: SCALARS sealevel="
-                   f"{xp.getDataf(self.dr_sealevel_temp):.1f}C "
-                   f"view_temp={xp.getDataf(self.dr_view_temp):.1f}C "
-                   f"view_snow={xp.getDataf(self.dr_view_snow):.2f} "
-                   f"view_rain={xp.getDataf(self.dr_view_rain):.2f} "
-                   f"source={xp.getDatai(self.dr_weather_source)} "
-                   f"(demande temp={temp:.1f}C)")
-        except Exception as e:
-            xp.log(f"LARD Weather v2: readback error: {e}")
+        # PRECEDENT. Pour verifier une injection, lire view/* ou
+        # graphics/view/visibility_effective_m APRES stabilisation (cf pipeline).
+        # NB : les datarefs TABLEAUX (temps_aloft, cloud_*) ne sont lisibles qu'ici,
+        # via getDatavf ; en UDP (RREF) ils renvoient 0.00 (piege a diagnostic).
 
     def _set_sim_speed(self, speed):
         """Set simulation speed multiplier (1=normal, 2=2x, 4=4x, etc.).

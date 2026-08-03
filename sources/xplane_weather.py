@@ -269,7 +269,12 @@ def load_weather_profile(profile_path):
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCHANGE_DIR = None
-_seq = 0
+# Amorce sur l'horloge (secondes epoch), pas 0 : le plugin deduplique sur
+# seq == last_ack_seq et garde ce dernier entre deux process Python. Deux runs
+# consecutifs partant de 0 verraient leur 1re commande avalee en silence. Le
+# temps augmentant toujours, un nouveau process part forcement au-dessus du
+# dernier seq acquitte par le precedent -> jamais de collision.
+_seq = int(time.time())
 
 
 def set_exchange_dir(xplane_dir):
