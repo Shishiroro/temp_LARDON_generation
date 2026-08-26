@@ -6,47 +6,6 @@ writable, see Resources/plugins/DataRefs.txt), NOT through the XPLMWeather
 API. Communicates with the LARD pipeline (sources/xplane_weather.py) via
 JSON files exchanged in Resources/plugins/PythonPlugins/lard_exchange/.
 
-WHY NOT XPLMWeather / setWeatherAtLocation (measured 2026-07-17, XP 12.4.2)
---------------------------------------------------------------------------
-That API is flagged EXPERIMENTAL by Laminar and it SILENTLY IGNORES
-info.visibility: we asked for 500 m and the sim rendered 21 km, every time.
-Three theories were tested against the sim and all three are FALSE:
-  - "XP12 derives visibility from the temperature/dewpoint spread": swept the
-    spread from 2.0 C down to 0.0 C (fully saturated air). Visibility never
-    moved off ~21 km. Humidity does NOT drive visibility.
-  - "info.age must be 0 for the report to have weight": getWeatherAtLocation
-    already returns age=0. No effect.
-  - "change_mode=0 means Rapidly Improving, so the sim burns the fog off":
-    change_mode=3 (Static) changes nothing.
-Fog has in fact NEVER worked in this project, in any version — it is a missing
-feature, not a regression. Do not "restore" anything from git history.
-
-THE RECIPE THAT WORKS (verified on screen: fog + rain at KPDX)
--------------------------------------------------------------
-  1. change_mode = 3 (Static) — see enum below, 0 is NOT a neutral value.
-  2. write the region datarefs (visibility in STATUTE MILES, not meters).
-  3. update_immediately = 1 — applies everything EXCEPT clouds.
-  4. sim/operation/regen_weather — THE missing piece. Without it the sim
-     never rebuilds its weather grid: the dataref holds the value we wrote
-     but sim/weather/aircraft/* and the render stay on the old one.
-Result: 500 m requested -> 500 m effective, to the meter.
-
-THE TWO SOURCES ARE EXCLUSIVE
------------------------------
-sim/weather/region/weather_source: 0=Preset, 1=Real, 2=Controlpad, 3=Plugin.
-regen_weather switches the sim to Preset, and from that moment X-Plane ignores
-every plugin record. So "fog via datarefs + the rest via setWeatherAtLocation"
-CANNOT work (measured: fog OK, clouds and rain dead). That mix is what made the
-earlier attempt look like it "broke the other profiles". Everything goes
-through the datarefs, or nothing does.
-
-STATE IS GLOBAL AND PERSISTS ACROSS SCENARIOS
----------------------------------------------
-Unlike an XPLMWeather record, these datarefs are sim-wide and survive into the
-next scenario. Hence the rule: EVERY parameter is written on EVERY injection,
-including the defaults and including clear skies. A key we skip is not "the
-default", it is "whatever the previous scenario left". Never make a write
-conditional on the value being non-default.
 
 Installation:
   py scripts/install_weather_plugin.py
